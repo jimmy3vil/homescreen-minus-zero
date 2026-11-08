@@ -12,6 +12,7 @@ on:
       - 'feat/*'
       - 'fix-*'
       - 'fix/*'
+      - 'rebuild/**'
 
 # Cancel in-progress runs for the same branch/PR
 concurrency:

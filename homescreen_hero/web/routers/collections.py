@@ -26,6 +26,8 @@ from homescreen_hero.core.integrations.plex_client import (
     get_plex_server,
     reorder_homescreen_collections,
     get_library_collections,
+    remove_or_hide_hub,
+    cleanup_hidden_managed_hubs,
 )
 from homescreen_hero.core.poster_proxy import (
     create_proxy_url,
@@ -1146,7 +1148,8 @@ def toggle_pin_collection_endpoint(
 
             if collection:
                 hub = collection.visibility()
-                hub.updateVisibility(home=False, shared=False, recommended=False)
+                if getattr(hub, "_promoted", False):
+                    remove_or_hide_hub(hub, request.collection_name)
                 logger.info(f"Removed unpinned collection '{request.collection_name}' from Plex homescreen")
         except Exception as e:
             logger.error(f"Failed to remove collection from Plex homescreen: {e}")
@@ -1249,3 +1252,33 @@ def get_recently_added_endpoint(
     except Exception as e:
         logger.error(f"Error fetching recently added: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch recently added")
+
+
+class HiddenHubOut(BaseModel):
+    library: str
+    title: str
+
+
+class CleanupHiddenHubsResponse(BaseModel):
+    dry_run: bool
+    removed: List[HiddenHubOut]
+
+
+@router.post("/cleanup-hidden-hubs", response_model=CleanupHiddenHubsResponse)
+def cleanup_hidden_hubs_endpoint(
+    dry_run: bool = True,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> CleanupHiddenHubsResponse:
+    # Remove collection rows from Plex's Manage Recommendations that are hidden
+    # everywhere. Call with dry_run=true first to preview.
+    try:
+        config = load_config()
+        server = get_plex_server(config)
+        removed = cleanup_hidden_managed_hubs(server, config, dry_run=dry_run)
+    except Exception as e:
+        logger.error("Hidden hub cleanup failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+    return CleanupHiddenHubsResponse(
+        dry_run=dry_run,
+        removed=[HiddenHubOut(**r) for r in removed],
+    )

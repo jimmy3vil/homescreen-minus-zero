@@ -331,6 +331,18 @@ def apply_home_screen_selection(
             return (0, pinned_order[name], name)
         return (1, 0, name)
 
+    # Identifiers of collections already listed in each library's Manage Recommendations.
+    # Fetched once per library so deselected collections can be handled without a
+    # per-collection Plex query.
+    promoted_identifiers: Set[str] = set()
+    for library_name in enabled_libraries:
+        try:
+            promoted_identifiers.update(
+                hub.identifier for hub in _get_managed_hubs_for_library(server, library_name)
+            )
+        except Exception as e:
+            logger.warning("Could not list managed hubs for '%s': %s", library_name, e)
+
     for name in sorted(all_names_to_process, key=sort_key):
         coll = all_collections.get(name)
         if coll is None:
@@ -340,6 +352,23 @@ def apply_home_screen_selection(
                     "Configured collection not found in any enabled Plex library: %s",
                     name,
                 )
+            continue
+
+        if name not in selected_set:
+            # Not on screen this rotation. Take it out of Manage Recommendations
+            # rather than leaving a hidden entry behind. Collections that aren't
+            # listed there are left untouched: setting visibility on them (even
+            # to all-off) would create a new hidden entry.
+            identifier = _collection_hub_identifier(coll)
+            if identifier not in promoted_identifiers:
+                logger.debug("Not in Manage Recommendations, leaving alone: %s", name)
+                continue
+            if name in previously_rotated_names and name not in configured_names:
+                logger.info("Removing previously managed collection (removed from config): %s", name)
+            else:
+                logger.debug("Removing from Manage Recommendations: %s", name)
+            if not dry_run:
+                remove_or_hide_hub(coll.visibility(), name)
             continue
 
         hub = coll.visibility()
@@ -373,14 +402,6 @@ def apply_home_screen_selection(
                         logger.debug("Set sort order for '%s' to '%s'", name, collection_sort[name])
                     except Exception:
                         logger.warning("Failed to update sort for '%s' (may be a smart collection)", name)
-        else:
-            # Collection is either configured but not selected, or was previously rotated but removed from config
-            if name in previously_rotated_names and name not in configured_names:
-                logger.info("Disabling visibility for previously managed collection (removed from config): %s", name)
-            else:
-                logger.debug("Disabling visibility for collection: %s", name)
-            if not dry_run:
-                hub.updateVisibility(home=False, shared=False, recommended=False)
 
     logger.info(
         "Home screen selection applied; %d collections enabled, %d collections processed",
@@ -409,6 +430,62 @@ def apply_home_screen_selection(
 def _get_managed_hubs_for_library(server: PlexServer, library_name: str) -> List[Any]:
     library = server.library.section(library_name)
     return [hub for hub in library.managedHubs() if hasattr(hub, "title")]
+
+
+def _collection_hub_identifier(collection: Any) -> str:
+    # The identifier Plex uses for a collection's row in Manage Recommendations.
+    return f"custom.collection.{collection.librarySectionID}.{collection.ratingKey}"
+
+
+def remove_or_hide_hub(hub: Any, name: str) -> None:
+    # Remove a collection's row from Manage Recommendations. Rows Plex won't let
+    # us delete are hidden instead.
+    try:
+        if getattr(hub, "deletable", True):
+            hub.remove()
+        else:
+            hub.updateVisibility(home=False, shared=False, recommended=False)
+    except Exception as e:
+        logger.warning("Failed to remove '%s' from Manage Recommendations: %s", name, e)
+
+
+def cleanup_hidden_managed_hubs(
+    server: PlexServer,
+    config: AppConfig,
+    *,
+    dry_run: bool = True,
+) -> List[Dict[str, str]]:
+    # One-off cleanup: remove collection rows from Manage Recommendations that are
+    # hidden everywhere (Recommended, Home and Friends' Home all off). Those rows
+    # have no visible effect; older versions of this app created them for every
+    # configured collection. Plex's built-in hubs and anything visible are untouched.
+    removed: List[Dict[str, str]] = []
+    for library_name in (lib.name for lib in config.plex.libraries if lib.enabled):
+        try:
+            hubs = _get_managed_hubs_for_library(server, library_name)
+        except Exception as e:
+            logger.warning("Could not list managed hubs for '%s': %s", library_name, e)
+            continue
+        for hub in hubs:
+            if not str(hub.identifier or "").startswith("custom.collection."):
+                continue
+            if hub.promotedToRecommended or hub.promotedToOwnHome or hub.promotedToSharedHome:
+                continue
+            if not getattr(hub, "deletable", True):
+                continue
+            removed.append({"library": library_name, "title": hub.title})
+            if not dry_run:
+                try:
+                    hub.remove()
+                except Exception as e:
+                    logger.warning("Failed to remove hidden hub '%s': %s", hub.title, e)
+                    removed.pop()
+    logger.info(
+        "%s %d hidden collection rows from Manage Recommendations",
+        "Would remove" if dry_run else "Removed",
+        len(removed),
+    )
+    return removed
 
 
 def _get_target_hub_order_for_library(

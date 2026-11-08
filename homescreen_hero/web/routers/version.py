@@ -16,7 +16,7 @@ router = APIRouter()
 # Cache GitHub response for 1 hour to avoid rate limits
 _github_cache: dict[str, tuple[float, Optional[str]]] = {}
 CACHE_TTL_SECONDS = 3600
-GITHUB_REPO = "trentferguson/homescreen-hero"
+GITHUB_REPO = "jimmy3vil/homescreen-hero"
 
 
 class VersionResponse(BaseModel):

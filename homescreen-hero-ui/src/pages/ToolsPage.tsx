@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Calendar, Wrench, History, FileSearch, Users, ArrowLeftRight, ShieldOff, Image } from "lucide-react";
+import { Calendar, Wrench, History, FileSearch, Users, ArrowLeftRight, ShieldOff, Image, Eraser } from "lucide-react";
 import ToolCard from "../components/tools/ToolCard";
 import DateAddedEditor from "../components/tools/DateAddedEditor";
 import WatchHistoryCleaner from "../components/tools/WatchHistoryCleaner";
@@ -8,6 +8,7 @@ import CopyWatchHistory from "../components/tools/CopyWatchHistory";
 import CollectionImportExport from "../components/tools/CollectionImportExport";
 import ClearUserTargeting from "../components/tools/ClearUserTargeting";
 import PosterBackup from "../components/tools/PosterBackup";
+import CleanupHiddenHubs from "../components/tools/CleanupHiddenHubs";
 
 type Tool = {
     id: string;
@@ -17,6 +18,12 @@ type Tool = {
 };
 
 const tools: Tool[] = [
+    {
+        id: "cleanup-hidden-hubs",
+        title: "Clean Up Manage Recommendations",
+        description: "Remove hidden collections cluttering Plex's Manage Recommendations list",
+        icon: Eraser,
+    },
     {
         id: "date-added-editor",
         title: "Date Added Editor",
@@ -113,6 +120,9 @@ export default function ToolsPage() {
             )}
             {activeTool === "clear-user-targeting" && (
                 <ClearUserTargeting onClose={() => setActiveTool(null)} />
+            )}
+            {activeTool === "cleanup-hidden-hubs" && (
+                <CleanupHiddenHubs onClose={() => setActiveTool(null)} />
             )}
             {activeTool === "poster-backup" && (
                 <PosterBackup onClose={() => setActiveTool(null)} />
