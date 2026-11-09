@@ -1,6 +1,6 @@
 name: Docker Publish (GHCR)
 
-# Builds the image and pushes it to ghcr.io/<owner>/homescreen-hero.
+# Builds the image and pushes it to ghcr.io/<owner>/<repo> (currently jimmy3vil/homescreen-minus-zero).
 #   push to develop         -> :develop  (+ :sha-xxxxxxx)
 #   push to rebuild/*        -> :rebuild-<name> (+ :sha-xxxxxxx)
 #   tag 1.2.3                -> :1.2.3 and :latest
@@ -42,7 +42,7 @@ jobs:
 
       - name: Image name (lowercase)
         id: img
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/homescreen-hero" >> "$GITHUB_OUTPUT"
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Tags and labels
         id: meta
