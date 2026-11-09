@@ -54,7 +54,8 @@ function ruleValue(rule: Rule, field: SchemaField | undefined): string {
     if (field?.type === "date" && rule.dateMode === "relative") {
         return rule.relAmount ? `${rule.relAmount}${rule.relUnit ?? "d"}` : "";
     }
-    if (field?.type === "boolean") return rule.value || "1";
+    // Plex's true/false fields carry the meaning in the operator ("is true" / "is false")
+    if (field?.type === "boolean") return "1";
     return rule.value.trim();
 }
 
@@ -307,12 +308,7 @@ export default function SmartCollectionBuilder({ library, onChange }: Props) {
                                     value={rule.value}
                                     onChange={(key) => updateRule(rule.id, { value: key })}
                                 />
-                            ) : f?.type === "boolean" ? (
-                                <select value={rule.value || "1"} onChange={(e) => updateRule(rule.id, { value: e.target.value })} className={inputClass}>
-                                    <option value="1">true</option>
-                                    <option value="0">false</option>
-                                </select>
-                            ) : f?.type === "date" ? (
+                            ) : f?.type === "boolean" ? null /* "is true" / "is false" is the operator */ : f?.type === "date" ? (
                                 <div className="flex flex-1 flex-wrap items-center gap-2">
                                     <select
                                         value={rule.dateMode ?? "relative"}

@@ -27,6 +27,20 @@ def has_custom_poster(thumb: Optional[str]) -> bool:
     return bool(thumb) and "/composite/" not in thumb
 
 
+def item_count(collection) -> int:
+    # Plex reports a limited smart collection's full match count; cap it at
+    # the collection's limit so it matches what the collection shows.
+    count = getattr(collection, "childCount", 0) or 0
+    content = getattr(collection, "content", None)
+    if getattr(collection, "smart", False) and content:
+        from .smart_collections import parse_smart_content
+
+        limit = parse_smart_content(content).get("limit")
+        if limit:
+            count = min(count, limit)
+    return count
+
+
 def _group_membership(config, library: str, collections: List[Any]) -> Dict[str, List[str]]:
     # collection title -> names of this library's groups it belongs to
     from .smart_groups import CollectionMetadata, resolve_smart_rules
@@ -44,7 +58,7 @@ def _group_membership(config, library: str, collections: List[Any]) -> Dict[str,
                 source="plex",
                 library=library,
                 labels=get_collection_labels(c),
-                item_count=getattr(c, "childCount", 0) or 0,
+                item_count=item_count(c),
                 sort_title=getattr(c, "titleSort", "") or "",
             )
             for c in collections
@@ -95,7 +109,7 @@ def build_overview(server, config, library: str) -> Dict[str, Any]:
             "sort_title": getattr(c, "titleSort", None) or c.title,
             "library": library,
             "smart": bool(getattr(c, "smart", False)),
-            "item_count": getattr(c, "childCount", 0) or 0,
+            "item_count": item_count(c),
             "added_at": _iso(getattr(c, "addedAt", None)),
             "updated_at": _iso(getattr(c, "updatedAt", None)),
             "labels": get_collection_labels(c),

@@ -21,6 +21,8 @@ class FakeSection:
             NS(key="year", title="Year", type="integer"),
             NS(key="addedAt", title="Date Added", type="date"),
             NS(key="unwatched", title="Unplayed", type="boolean"),
+            NS(key="guid", title="Guid", type="guid"),
+            NS(key="index", title="Index", type="integer"),
         ]
 
     def listFilters(self, libtype=None):
@@ -103,5 +105,6 @@ def test_schema_marks_fields_with_choices():
     schema = filter_schema(FakeSection())
     by_key = {f["key"]: f for f in schema["fields"]}
     assert by_key["genre"]["has_choices"] and not by_key["title"]["has_choices"]
+    assert "guid" not in by_key and "index" not in by_key
     assert set(schema["operators"]) == {"string", "tag", "integer", "date", "boolean"}
     assert schema["libtypes"] == [{"key": "movie", "title": "Movies"}]

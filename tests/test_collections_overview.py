@@ -108,3 +108,12 @@ def test_has_custom_poster():
     assert not overview.has_custom_poster("/library/collections/5/composite/123")
     assert overview.has_custom_poster("/library/metadata/5/thumb/123")
     assert not overview.has_custom_poster(None)
+
+
+def test_limited_smart_collection_count_is_capped():
+    smart = NS(childCount=184, smart=True, content="/library/sections/3/all?type=1&limit=50&genre!=7")
+    unlimited = NS(childCount=61, smart=True, content="/library/sections/3/all?type=1&studio=Pixar")
+    static = NS(childCount=6, smart=False, content=None)
+    assert overview.item_count(smart) == 50
+    assert overview.item_count(unlimited) == 61
+    assert overview.item_count(static) == 6

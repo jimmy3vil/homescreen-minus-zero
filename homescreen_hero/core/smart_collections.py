@@ -24,6 +24,9 @@ LIBTYPES: Dict[str, List[Dict[str, str]]] = {
     ],
 }
 
+# Fields Plex lists that only make sense internally, never offered as rules.
+HIDDEN_FIELDS = {"guid", "id", "index", "group", "having"}
+
 # Relative date values Plex accepts, e.g. "-30d" = 30 days ago.
 _RELATIVE_DATE = re.compile(r"^-?\d+[dwmy]$")
 _ABSOLUTE_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -58,6 +61,8 @@ def filter_schema(section, libtype: Optional[str] = None) -> Dict[str, Any]:
     field_types = set()
     for f in section.listFields(libtype):
         short = f.key.split(".")[-1]
+        if short in HIDDEN_FIELDS:
+            continue
         fields.append({
             "key": f.key,
             "title": f.title,
