@@ -74,9 +74,9 @@ function ChoicePicker({
     const [choices, setChoices] = useState<Choice[] | null>(null);
     const [query, setQuery] = useState("");
 
+    // Keyed by field in the parent, so a new field gets a fresh picker
     useEffect(() => {
         let cancelled = false;
-        setChoices(null);
         fetchWithAuth(
             `/api/collections/${encodeURIComponent(library)}/smart-filters/choices?field=${encodeURIComponent(field)}&libtype=${encodeURIComponent(libtype)}`
         )
@@ -300,6 +300,7 @@ export default function SmartCollectionBuilder({ library, onChange }: Props) {
 
                             {f?.has_choices ? (
                                 <ChoicePicker
+                                    key={`${rule.id}-${rule.field}-${libtype}`}
                                     library={library}
                                     libtype={libtype ?? schema.libtype}
                                     field={rule.field}
