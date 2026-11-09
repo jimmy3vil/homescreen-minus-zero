@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from pydantic import BaseModel
 import logging
@@ -427,6 +427,7 @@ def proxy_group_poster(cache_key: str):
 class LibraryOut(BaseModel):
     title: str
     type: str  # "movie" or "show"
+    enabled: bool = False  # switched on in Settings
 
 
 class LibrariesResponse(BaseModel):
@@ -441,9 +442,10 @@ class LibrariesResponse(BaseModel):
 def get_available_libraries(
     _current_user: CurrentUser = Depends(require_admin),
 ) -> LibrariesResponse:
-    """Get all available Plex library sections."""
+    """Get all available Plex library sections, enabled ones first."""
     config = load_config()
     server = get_plex_server(config)
+    enabled_names = {lib.name for lib in config.plex.libraries if lib.enabled}
 
     try:
         libraries = []
@@ -456,13 +458,14 @@ def get_available_libraries(
             libraries.append(
                 LibraryOut(
                     title=section.title,
-                    type=section.type
+                    type=section.type,
+                    enabled=section.title in enabled_names,
                 )
             )
             logger.debug(f"Added library: {section.title} (type: {section.type})")
 
-        # Sort by title for consistent ordering
-        libraries.sort(key=lambda lib: lib.title)
+        # Enabled libraries first, then by title
+        libraries.sort(key=lambda lib: (not lib.enabled, lib.title))
 
         return LibrariesResponse(libraries=libraries)
 
@@ -1282,3 +1285,128 @@ def cleanup_hidden_hubs_endpoint(
         dry_run=dry_run,
         removed=[HiddenHubOut(**r) for r in removed],
     )
+
+
+# ---------------------------------------------------------------- smart collections
+
+class SmartRuleIn(BaseModel):
+    field: str
+    operator: str
+    value: str
+
+
+class SmartQueryIn(BaseModel):
+    libtype: Optional[str] = None
+    match: Literal["all", "any"] = "all"
+    rules: List[SmartRuleIn] = []
+    sort: Optional[str] = None
+    limit: Optional[int] = None
+
+
+class CreateSmartCollectionRequest(SmartQueryIn):
+    title: str
+
+
+def _smart_query(section, payload: SmartQueryIn):
+    from homescreen_hero.core.smart_collections import SmartQuery, SmartRule, default_libtype
+
+    return SmartQuery(
+        libtype=payload.libtype or default_libtype(section),
+        match=payload.match,
+        rules=[SmartRule(field=r.field, operator=r.operator, value=r.value) for r in payload.rules],
+        sort=payload.sort or None,
+        limit=payload.limit or None,
+    )
+
+
+def _enabled_section(library: str):
+    # Smart collections can only be built in libraries enabled in Settings.
+    config = load_config()
+    if library not in {lib.name for lib in config.plex.libraries if lib.enabled}:
+        raise HTTPException(status_code=400, detail=f"Library '{library}' isn't enabled")
+    server = get_plex_server(config)
+    try:
+        return server, server.library.section(library)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Library '{library}' not found in Plex")
+
+
+@router.get("/{library}/smart-filters")
+def get_smart_filter_schema(
+    library: str,
+    libtype: Optional[str] = None,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    # Fields, operators and sorts for building a smart collection in this library.
+    from homescreen_hero.core.smart_collections import filter_schema
+
+    _, section = _enabled_section(library)
+    try:
+        return filter_schema(section, libtype)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+
+
+@router.get("/{library}/smart-filters/choices")
+def get_smart_filter_choices(
+    library: str,
+    field: str,
+    libtype: Optional[str] = None,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    # Values for a tag-like field, e.g. every genre or actor in the library.
+    from homescreen_hero.core.smart_collections import filter_choices
+
+    _, section = _enabled_section(library)
+    try:
+        return {"choices": filter_choices(section, field, libtype)}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+
+
+@router.post("/{library}/smart-preview")
+def preview_smart_collection(
+    library: str,
+    payload: SmartQueryIn,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.smart_collections import preview
+
+    server, section = _enabled_section(library)
+    try:
+        result = preview(server, section, _smart_query(section, payload))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+    for item in result["items"]:
+        thumb = item.pop("thumb", None)
+        item["poster_url"] = create_proxy_url(server.url(thumb, includeToken=True)) if thumb else None
+    return result
+
+
+@router.post("/{library}/smart")
+def create_smart_collection_endpoint(
+    library: str,
+    payload: CreateSmartCollectionRequest,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.smart_collections import create_smart_collection
+
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Give the collection a name")
+    server, section = _enabled_section(library)
+    if any(col.title == title for col in section.collections()):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Collection '{title}' already exists in library '{library}'",
+        )
+    try:
+        create_smart_collection(server, section, title, _smart_query(section, payload))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+    invalidate_collections_cache()
+    return {"success": True, "title": title, "library": library}

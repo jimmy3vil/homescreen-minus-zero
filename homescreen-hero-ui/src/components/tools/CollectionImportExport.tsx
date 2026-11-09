@@ -25,6 +25,7 @@ import {
 type Library = {
     title: string;
     type: string;
+    enabled?: boolean;
 };
 
 type CollectionSummary = {
@@ -137,6 +138,14 @@ function ExportTab({
     setToast: (t: { message: string; type: "success" | "error" } | null) => void;
 }) {
     const [selectedLibrary, setSelectedLibrary] = useState<string>("");
+
+    // Default to the first enabled library once libraries load
+    useEffect(() => {
+        if (!selectedLibrary) {
+            const firstEnabled = libraries.find((lib) => lib.enabled);
+            if (firstEnabled) setSelectedLibrary(firstEnabled.title);
+        }
+    }, [libraries, selectedLibrary]);
     const [collections, setCollections] = useState<CollectionSummary[]>([]);
     const [selectedCollections, setSelectedCollections] = useState<Set<string>>(new Set());
     const [loadingCollections, setLoadingCollections] = useState(false);
@@ -403,6 +412,14 @@ function ImportTab({
     setToast: (t: { message: string; type: "success" | "error" } | null) => void;
 }) {
     const [selectedLibrary, setSelectedLibrary] = useState<string>("");
+
+    // Default to the first enabled library once libraries load
+    useEffect(() => {
+        if (!selectedLibrary) {
+            const firstEnabled = libraries.find((lib) => lib.enabled);
+            if (firstEnabled) setSelectedLibrary(firstEnabled.title);
+        }
+    }, [libraries, selectedLibrary]);
     const [importMode, setImportMode] = useState<"file" | "share-code">("file");
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const [shareCode, setShareCode] = useState("");

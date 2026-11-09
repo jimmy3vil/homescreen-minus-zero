@@ -193,7 +193,8 @@ export default function SmartGroupDetailPage() {
             .catch(() => {}); // Non-critical
         fetchWithAuth("/api/admin/config/plex")
             .then((r) => r.json())
-            .then((data) => setPlexLibraries(data.libraries ?? []))
+            // Enabled libraries first
+            .then((data) => setPlexLibraries([...(data.libraries ?? [])].sort((a: { enabled: boolean }, b: { enabled: boolean }) => Number(b.enabled) - Number(a.enabled))))
             .catch(() => {}); // Library picker just stays empty
     }, []);
 

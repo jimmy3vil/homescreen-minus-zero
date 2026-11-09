@@ -26,6 +26,7 @@ type TVShow = {
 type Library = {
     title: string;
     type: string;
+    enabled?: boolean;
 };
 
 type WatchHistoryCleanerProps = {
@@ -59,6 +60,8 @@ export default function WatchHistoryCleaner({ onClose }: WatchHistoryCleanerProp
                     (lib: Library) => lib.type === "show"
                 );
                 setLibraries(showLibraries);
+                const firstEnabled = showLibraries.find((lib: Library) => lib.enabled);
+                if (firstEnabled) setSelectedLibrary(firstEnabled.title);
             })
             .catch((e) => console.error("Failed to fetch libraries:", e));
     }, []);

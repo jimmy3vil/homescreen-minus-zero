@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchWithAuth } from "../utils/api";
+import SmartCollectionBuilder, { type SmartQuery } from "../components/SmartCollectionBuilder";
 import { RefreshCw, Plus, Search, Trash2, Check, ChevronDown, ArrowUpAZ, ArrowDownAZ, Edit, Image, Pin, Home, Users, Star, LayoutGrid, List } from "lucide-react";
 import { useTheme } from "../utils/theme";
 import { Popover, PopoverTrigger, PopoverContent } from "../components/ui/popover";
@@ -342,6 +343,8 @@ export default function CollectionsPage() {
     const [newCollectionTitle, setNewCollectionTitle] = useState("");
     const [newCollectionLibrary, setNewCollectionLibrary] = useState("");
     const [newCollectionSummary, setNewCollectionSummary] = useState("");
+    const [newCollectionKind, setNewCollectionKind] = useState<"static" | "smart">("static");
+    const [smartQuery, setSmartQuery] = useState<SmartQuery | null>(null);
     const [creating, setCreating] = useState(false);
     const [pendingDelete, setPendingDelete] = useState<{ library: string; title: string } | null>(null);
 
@@ -409,6 +412,17 @@ export default function CollectionsPage() {
             loadAvailableLibraries();
         }
     }, [showCreateModal]);
+
+    // Default the new collection's library to the first enabled one
+    useEffect(() => {
+        if (!showCreateModal || newCollectionLibrary || !enabledLibraries) return;
+        const firstEnabled = availableLibraries.find((lib) => enabledLibraries.includes(lib.title));
+        if (firstEnabled) {
+            setNewCollectionLibrary(firstEnabled.title);
+            searchMovies("", firstEnabled.title);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [showCreateModal, availableLibraries, enabledLibraries]);
 
     const loadAvailableLibraries = async () => {
         try {
@@ -649,9 +663,62 @@ export default function CollectionsPage() {
         setSelectedMovies(newSelected);
     };
 
+    const resetCreateForm = () => {
+        setNewCollectionTitle("");
+        setNewCollectionLibrary("");
+        setNewCollectionSummary("");
+        setNewCollectionKind("static");
+        setSmartQuery(null);
+        setMovieSearchQuery("");
+        setMovieSearchResults([]);
+        setSelectedMovies(new Set());
+    };
+
+    const saveNewCollectionSummary = async () => {
+        if (!newCollectionSummary.trim()) return;
+        await fetchWithAuth(
+            `/api/collections/${encodeURIComponent(newCollectionLibrary)}/${encodeURIComponent(newCollectionTitle.trim())}`,
+            {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ summary: newCollectionSummary.trim() }),
+            }
+        );
+    };
+
+    const handleCreateSmartCollection = async () => {
+        if (!smartQuery) return;
+        try {
+            setCreating(true);
+            const r = await fetchWithAuth(`/api/collections/${encodeURIComponent(newCollectionLibrary)}/smart`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ title: newCollectionTitle.trim(), ...smartQuery }),
+            });
+            if (!r.ok) {
+                const data = await r.json().catch(() => null);
+                throw new Error(data?.detail ?? "Failed to create smart collection");
+            }
+            await saveNewCollectionSummary();
+            setToast({ message: `Created smart collection '${newCollectionTitle.trim()}'`, type: "success" });
+            resetCreateForm();
+            setShowCreateModal(false);
+            await loadCollections(true);
+        } catch (err) {
+            setToast({ message: err instanceof Error ? err.message : "Failed to create smart collection", type: "error" });
+        } finally {
+            setCreating(false);
+        }
+    };
+
     const handleCreateCollection = async () => {
         if (!newCollectionTitle.trim() || !newCollectionLibrary.trim()) {
             setToast({ message: "Title and Library are required", type: "error" });
+            return;
+        }
+
+        if (newCollectionKind === "smart") {
+            await handleCreateSmartCollection();
             return;
         }
 
@@ -1429,13 +1496,7 @@ export default function CollectionsPage() {
                 onOpenChange={(isOpen) => {
                     if (!isOpen) {
                         setShowCreateModal(false);
-                        // Reset form
-                        setNewCollectionTitle("");
-                        setNewCollectionLibrary("");
-                        setNewCollectionSummary("");
-                        setMovieSearchQuery("");
-                        setMovieSearchResults([]);
-                        setSelectedMovies(new Set());
+                        resetCreateForm();
                     }
                 }}
             >
@@ -1444,15 +1505,35 @@ export default function CollectionsPage() {
                         <div className="flex flex-col gap-1">
                             <DialogTitle>Create Collection</DialogTitle>
                             <DialogDescription>
-                                Create a new collection by selecting items from your library
+                                {newCollectionKind === "smart"
+                                    ? "Build a collection that updates itself from filters, like Plex's smart collections"
+                                    : "Create a new collection by selecting items from your library"}
                             </DialogDescription>
                         </div>
                         <DialogCloseButton />
                     </DialogHeader>
 
                     {/* Form */}
-                    <div className="p-6 space-y-4">
-                        <div className="grid grid-cols-2 gap-4">
+                    <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+                        <div className="inline-flex rounded-lg border border-slate-700 bg-slate-900 p-0.5">
+                            {([
+                                { key: "static", label: "Static", hint: "Pick items by hand" },
+                                { key: "smart", label: "Smart", hint: "Built from filters" },
+                            ] as const).map((opt) => (
+                                <button
+                                    key={opt.key}
+                                    type="button"
+                                    onClick={() => setNewCollectionKind(opt.key)}
+                                    title={opt.hint}
+                                    className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
+                                        newCollectionKind === opt.key ? "bg-primary/20 text-primary" : "text-slate-400 hover:text-slate-200"
+                                    }`}
+                                >
+                                    {opt.label}
+                                </button>
+                            ))}
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                                 <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">
                                     Collection Title *
@@ -1532,7 +1613,21 @@ export default function CollectionsPage() {
                             />
                         </div>
 
+                        {newCollectionKind === "smart" && (
+                            <div>
+                                <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">
+                                    Filters
+                                </label>
+                                {newCollectionLibrary ? (
+                                    <SmartCollectionBuilder library={newCollectionLibrary} onChange={setSmartQuery} />
+                                ) : (
+                                    <p className="text-sm text-slate-500">Choose a library first.</p>
+                                )}
+                            </div>
+                        )}
+
                         {/* Search for movies */}
+                        {newCollectionKind === "static" && (
                         <div>
                             <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">
                                 Add Items to Collection * (Select at least one)
@@ -1549,9 +1644,11 @@ export default function CollectionsPage() {
                                 />
                             </div>
                         </div>
+                        )}
                     </div>
 
                     {/* Movie Selection Grid */}
+                    {newCollectionKind === "static" && (
                     <div className="flex-1 overflow-y-auto px-6 pb-4 scrollbar-hover-only max-h-[40vh]">
                         {searchLoading ? (
                             <div className="text-slate-400 text-center py-8">Loading...</div>
@@ -1613,24 +1710,23 @@ export default function CollectionsPage() {
                             </div>
                         )}
                     </div>
+                    )}
 
                     <DialogFooter className="bg-slate-950/50">
                         <p className="text-sm text-slate-400">
-                            {selectedMovies.size === 0
-                                ? "Select at least one item to create the collection"
-                                : `${selectedMovies.size} item(s) selected`}
+                            {newCollectionKind === "smart"
+                                ? smartQuery
+                                    ? "Plex keeps this collection up to date as your library changes"
+                                    : "Finish the filters to create the collection"
+                                : selectedMovies.size === 0
+                                  ? "Select at least one item to create the collection"
+                                  : `${selectedMovies.size} item(s) selected`}
                         </p>
                         <div className="flex items-center gap-3">
                             <button
                                 onClick={() => {
                                     setShowCreateModal(false);
-                                    // Reset form
-                                    setNewCollectionTitle("");
-                                    setNewCollectionLibrary("");
-                                    setNewCollectionSummary("");
-                                    setMovieSearchQuery("");
-                                    setMovieSearchResults([]);
-                                    setSelectedMovies(new Set());
+                                    resetCreateForm();
                                 }}
                                 disabled={creating}
                                 className="px-4 py-2 rounded-lg border border-slate-700 bg-slate-800/60 text-slate-300 text-sm font-medium hover:bg-slate-700 hover:border-slate-600 transition-all duration-200 active:scale-95 disabled:opacity-50"
@@ -1639,10 +1735,15 @@ export default function CollectionsPage() {
                             </button>
                             <button
                                 onClick={handleCreateCollection}
-                                disabled={creating || !newCollectionTitle.trim() || !newCollectionLibrary.trim() || selectedMovies.size === 0}
+                                disabled={
+                                    creating ||
+                                    !newCollectionTitle.trim() ||
+                                    !newCollectionLibrary.trim() ||
+                                    (newCollectionKind === "smart" ? !smartQuery : selectedMovies.size === 0)
+                                }
                                 className="px-4 py-2 rounded-lg bg-primary hover:bg-primary-hover text-white text-sm font-bold shadow-lg shadow-primary/30 hover:shadow-primary/40 transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                {creating ? "Creating..." : "Create Collection"}
+                                {creating ? "Creating..." : newCollectionKind === "smart" ? "Create Smart Collection" : "Create Collection"}
                             </button>
                         </div>
                     </DialogFooter>

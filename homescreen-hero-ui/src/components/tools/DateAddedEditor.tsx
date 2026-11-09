@@ -30,6 +30,7 @@ type MediaItem = {
 type Library = {
     title: string;
     type: string;
+    enabled?: boolean;
 };
 
 type DateOption = "specific" | "30-days-ago" | "match-release";
@@ -79,16 +80,24 @@ export default function DateAddedEditor({ onClose }: DateAddedEditorProps) {
     // Fetch libraries and recent media on mount
     useEffect(() => {
         const init = async () => {
+            // Default to the first enabled library
+            let startLibrary = "all";
             try {
                 const libResponse = await fetchWithAuth("/api/collections/libraries");
                 const libData = await libResponse.json();
-                setLibraries(libData.libraries || []);
+                const libs: Library[] = libData.libraries || [];
+                setLibraries(libs);
+                const firstEnabled = libs.find((lib) => lib.enabled);
+                if (firstEnabled) {
+                    startLibrary = firstEnabled.title;
+                    setSelectedLibrary(startLibrary);
+                }
             } catch (e) {
                 console.error("Failed to fetch libraries:", e);
             }
 
             // Load recently added items
-            const recentItems = await fetchRecentMedia("all");
+            const recentItems = await fetchRecentMedia(startLibrary);
             setSearchResults(recentItems);
             setInitialLoading(false);
         };

@@ -1477,7 +1477,7 @@ export default function GroupsPage() {
                                     className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-primary/70 text-sm"
                                 >
                                     <option value="" disabled>Choose a library…</option>
-                                    {libraries.map((lib) => (
+                                    {[...libraries].sort((a, b) => Number(b.enabled) - Number(a.enabled)).map((lib) => (
                                         <option key={lib.name} value={lib.name} disabled={!lib.enabled}>
                                             {lib.name}{lib.enabled ? "" : " (not enabled)"}
                                         </option>

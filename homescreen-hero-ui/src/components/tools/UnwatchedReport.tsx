@@ -48,6 +48,7 @@ type UnwatchedItem = {
 type Library = {
     title: string;
     type: string;
+    enabled?: boolean;
 };
 
 type UnwatchedMode = "never_watched" | "not_watched_since";
