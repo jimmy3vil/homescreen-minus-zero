@@ -13,6 +13,7 @@ import {
     Plus,
     RefreshCw,
     Rows3,
+    Shapes,
     Search,
     X,
 } from "lucide-react";
@@ -30,6 +31,8 @@ import {
 } from "../components/ui/dialog";
 import CollectionFilterPanel from "../components/collections/CollectionFilterPanel";
 import EditCollectionPanel from "../components/collections/EditCollectionPanel";
+import CollectionTypesPanel from "../components/collections/CollectionTypesPanel";
+import ItemFinder from "../components/collections/ItemFinder";
 import {
     CollectionCardView,
     CollectionListItem,
@@ -53,19 +56,12 @@ import {
     storeFilters,
     type CollectionFilters,
     type CollectionOverview,
+    type CollectionTypeDef,
     type Scope,
 } from "../components/collections/collectionFilters";
 
 // The Collections page works on one library at a time.
 type Collection = CollectionOverview;
-
-type LibraryItem = {
-    rating_key: string;
-    title: string;
-    year: number | null;
-    thumb: string | null;
-    type: string;
-};
 
 type Library = {
     title: string;
@@ -73,7 +69,14 @@ type Library = {
     enabled?: boolean;
 };
 
-type Overview = { library: string; collections: CollectionOverview[]; groups: string[]; labels: string[] };
+type Overview = {
+    library: string;
+    collections: CollectionOverview[];
+    groups: string[];
+    labels: string[];
+    types: CollectionTypeDef[];
+    prefixes: { prefix: string; count: number; example: string }[];
+};
 type ViewMode = "rows" | "cards" | "list";
 
 const LIBRARY_KEY = "collections.library";
@@ -150,13 +153,11 @@ export default function CollectionsPage() {
     const [pendingDelete, setPendingDelete] = useState<{ library: string; title: string } | null>(null);
 
     // Movie search for create modal
-    const [movieSearchQuery, setMovieSearchQuery] = useState("");
-    const [movieSearchResults, setMovieSearchResults] = useState<LibraryItem[]>([]);
     const [selectedMovies, setSelectedMovies] = useState<Set<string>>(new Set());
-    const [searchLoading, setSearchLoading] = useState(false);
 
     // Edit panel and this library's groups
     const [editingKey, setEditingKey] = useState<string | null>(null);
+    const [typesOpen, setTypesOpen] = useState(false);
     const [libraryGroups, setLibraryGroups] = useState<{ name: string; smart: boolean }[]>([]);
 
     // Load libraries once; pick a library if none is chosen or it's no longer enabled
@@ -304,6 +305,7 @@ export default function CollectionsPage() {
         pin: (c, v) => togglePin(c, v),
         unpin: (c) => togglePin(c),
         pinning: pinningKey,
+        filterType: (t) => setFilters({ ...filters, type: { id: String(t.id), name: t.name } }),
         showAttention: !!(filters.empty || filters.noSummary || filters.noPoster || filters.lastRotated?.op === "never"),
         groups: libraryGroups,
         setGroup: async (c, group, member) => {
@@ -344,67 +346,7 @@ export default function CollectionsPage() {
     // New collections go into the library being worked on
     const openCreateModal = () => {
         setNewCollectionLibrary(library);
-        if (library) searchMovies("", library);
         setShowCreateModal(true);
-    };
-
-    // Debounce movie search in the create modal
-    useEffect(() => {
-        if (!newCollectionLibrary || !showCreateModal) return;
-        const timeoutId = setTimeout(() => searchMovies(movieSearchQuery), 300);
-        return () => clearTimeout(timeoutId);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [movieSearchQuery]);
-
-    const searchMovies = async (query: string, libraryName?: string) => {
-        // Use provided library name or fall back to state
-        const library = libraryName || newCollectionLibrary;
-
-        if (!library.trim()) {
-            return;
-        }
-
-        try {
-            setSearchLoading(true);
-            // Clear previous results immediately
-            setMovieSearchResults([]);
-
-            const params = new URLSearchParams({
-                ...(query && { query }),
-            });
-
-            const response = await fetchWithAuth(
-                `/api/collections/${encodeURIComponent(library)}/search?${params}`
-            );
-
-            if (!response.ok) {
-                // Handle library not found or other errors
-                const errorData = await response.json().catch(() => ({}));
-                const errorMessage = errorData.detail || `Library "${newCollectionLibrary}" not found`;
-                setToast({ message: errorMessage, type: "error" });
-                setMovieSearchResults([]);
-                return;
-            }
-
-            const data = await response.json();
-            setMovieSearchResults(data.items);
-        } catch (err) {
-            console.error("Search failed:", err);
-            setToast({ message: `Failed to search library "${library}"`, type: "error" });
-            setMovieSearchResults([]);
-        } finally {
-            setSearchLoading(false);
-        }
-    };
-
-    const toggleMovieSelection = (ratingKey: string) => {
-        const newSelected = new Set(selectedMovies);
-        if (newSelected.has(ratingKey)) {
-            newSelected.delete(ratingKey);
-        } else {
-            newSelected.add(ratingKey);
-        }
-        setSelectedMovies(newSelected);
     };
 
     const resetCreateForm = () => {
@@ -413,8 +355,6 @@ export default function CollectionsPage() {
         setNewCollectionSummary("");
         setNewCollectionKind("static");
         setSmartQuery(null);
-        setMovieSearchQuery("");
-        setMovieSearchResults([]);
         setSelectedMovies(new Set());
     };
 
@@ -467,74 +407,29 @@ export default function CollectionsPage() {
         }
 
         if (selectedMovies.size === 0) {
-            setToast({ message: "Please select at least one item for the collection", type: "error" });
+            setToast({ message: "Select at least one item for the collection", type: "error" });
             return;
         }
 
         try {
             setCreating(true);
-
-            // First, create the collection by adding the first selected movie
-            const firstMovieKey = Array.from(selectedMovies)[0];
-            const firstMovie = movieSearchResults.find(m => m.rating_key === firstMovieKey);
-
-            if (!firstMovie) {
-                throw new Error("Selected movie not found");
-            }
-
-            // Add the first movie to create the collection
-            await fetchWithAuth(
-                `/api/collections/${encodeURIComponent(newCollectionLibrary)}/${encodeURIComponent(newCollectionTitle)}/add-item`,
-                {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ rating_key: firstMovieKey }),
-                }
-            );
-
-            // Add remaining movies if any
-            const remainingMovies = Array.from(selectedMovies).slice(1);
-            for (const ratingKey of remainingMovies) {
-                await fetchWithAuth(
-                    `/api/collections/${encodeURIComponent(newCollectionLibrary)}/${encodeURIComponent(newCollectionTitle)}/add-item`,
-                    {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ rating_key: ratingKey }),
-                    }
-                );
-            }
-
-            // Set summary if provided
-            if (newCollectionSummary.trim()) {
-                await fetchWithAuth(
-                    `/api/collections/${encodeURIComponent(newCollectionLibrary)}/${encodeURIComponent(newCollectionTitle)}`,
-                    {
-                        method: "PUT",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ summary: newCollectionSummary.trim() }),
-                    }
-                );
-            }
-
-            // Show success toast
-            setToast({ message: `Created collection '${newCollectionTitle}' with ${selectedMovies.size} item(s)`, type: "success" });
-
-            // Reset form
-            setNewCollectionTitle("");
-            setNewCollectionLibrary("");
-            setNewCollectionSummary("");
-            setMovieSearchQuery("");
-            setMovieSearchResults([]);
-            setSelectedMovies(new Set());
+            const title = newCollectionTitle.trim();
+            const r = await fetchWithAuth(`/api/collections/${encodeURIComponent(newCollectionLibrary)}/manual`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ title, rating_keys: [...selectedMovies] }),
+            });
+            const data = await r.json().catch(() => null);
+            if (!r.ok) throw new Error(data?.detail ?? "Failed to create collection");
+            await saveNewCollectionSummary();
+            setToast({ message: `Created collection "${title}" with ${data.added} item${data.added === 1 ? "" : "s"}`, type: "success" });
+            resetCreateForm();
             setShowCreateModal(false);
-
-            // Refresh collections list and invalidate cache
             await loadCollections(true);
         } catch (err) {
             setToast({
                 message: err instanceof Error ? err.message : "Failed to create collection",
-                type: "error"
+                type: "error",
             });
         } finally {
             setCreating(false);
@@ -706,6 +601,10 @@ export default function CollectionsPage() {
                     </Listbox>
                 </div>
                 <div className="flex items-center gap-2">
+                    <button onClick={() => setTypesOpen(true)} disabled={!overview} className={`${control} disabled:opacity-50`} title="Name and set up the kinds of collection in this library">
+                        <Shapes className="h-4 w-4" />
+                        <span className="hidden sm:inline">Collection types</span>
+                    </button>
                     <button onClick={() => loadOverview(true)} disabled={loading || !library} className={`${control} disabled:opacity-50`} title="Reload collections from Plex">
                         <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
                         <span className="hidden sm:inline">Refresh</span>
@@ -755,7 +654,7 @@ export default function CollectionsPage() {
                     <select
                         value={filters.sort}
                         onChange={(e) => setFilters({ ...filters, sort: e.target.value as CollectionFilters["sort"] })}
-                        className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary/70"
+                        className="rounded-lg border border-slate-700 bg-slate-900 pl-3 pr-10 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary/70"
                         title={filters.sort === "total_plays" ? TOTAL_PLAYS_HINT : undefined}
                     >
                         {SORTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
@@ -835,10 +734,26 @@ export default function CollectionsPage() {
 
             {body()}
 
+            {overview && (
+                <CollectionTypesPanel
+                    open={typesOpen}
+                    onOpenChange={setTypesOpen}
+                    library={library}
+                    labels={overview.labels}
+                    groups={overview.groups}
+                    prefixes={overview.prefixes}
+                    collections={overview.collections}
+                    onSaved={(message) => {
+                        setToast({ message, type: "success" });
+                        loadOverview();
+                    }}
+                />
+            )}
+
             <EditCollectionPanel
                 library={library}
                 ratingKey={editingKey}
-                knownLabels={overview?.labels ?? []}
+                currentType={overview?.collections.find((c) => c.rating_key === editingKey)?.type ?? null}
                 onClose={() => setEditingKey(null)}
                 onSaved={(message) => {
                     setToast({ message, type: "success" });
@@ -855,6 +770,7 @@ export default function CollectionsPage() {
                     onChange={setFilters}
                     groups={overview.groups}
                     labels={overview.labels}
+                    types={overview.types}
                     matchingCount={visible.length}
                     totalCount={all.length}
                 />
@@ -925,14 +841,8 @@ export default function CollectionsPage() {
                                     value={newCollectionLibrary}
                                     onChange={(newLibrary) => {
                                         setNewCollectionLibrary(newLibrary);
-                                        // Clear search results and selections when library changes
-                                        setMovieSearchResults([]);
+                                        // Items belong to one library, so a new library starts a new selection
                                         setSelectedMovies(new Set());
-                                        setMovieSearchQuery("");
-                                        // Auto-load items from the selected library
-                                        if (newLibrary) {
-                                            searchMovies("", newLibrary);
-                                        }
                                     }}
                                     disabled={loadingLibraries}
                                 >
@@ -996,91 +906,19 @@ export default function CollectionsPage() {
                             </div>
                         )}
 
-                        {/* Search for movies */}
                         {newCollectionKind === "static" && (
-                        <div>
-                            <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">
-                                Add Items to Collection * (Select at least one)
-                            </label>
-                            <div className="relative">
-                                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-500" size={20} />
-                                <input
-                                    type="text"
-                                    placeholder={newCollectionLibrary ? "Search your library..." : "Enter a library name first..."}
-                                    value={movieSearchQuery}
-                                    onChange={(e) => setMovieSearchQuery(e.target.value)}
-                                    disabled={!newCollectionLibrary}
-                                    className="w-full pl-10 pr-4 py-2.5 bg-slate-800/60 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary/70 disabled:opacity-50"
-                                />
-                            </div>
-                        </div>
-                        )}
-                    </div>
-
-                    {/* Movie Selection Grid */}
-                    {newCollectionKind === "static" && (
-                    <div className="flex-1 overflow-y-auto px-6 pb-4 scrollbar-hover-only max-h-[40vh]">
-                        {searchLoading ? (
-                            <div className="text-slate-400 text-center py-8">Loading...</div>
-                        ) : movieSearchResults.length > 0 ? (
                             <div>
-                                <p className="text-sm text-slate-400 mb-3">
-                                    {selectedMovies.size} item(s) selected
-                                </p>
-                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                                    {movieSearchResults.map((item) => (
-                                        <button
-                                            key={item.rating_key}
-                                            onClick={() => toggleMovieSelection(item.rating_key)}
-                                            className={`rounded-xl overflow-hidden border transition-all ${
-                                                selectedMovies.has(item.rating_key)
-                                                    ? "ring-2 ring-primary border-primary/50 bg-slate-800/80"
-                                                    : "border-slate-800/60 bg-slate-900/50 hover:border-slate-700"
-                                            }`}
-                                        >
-                                            {/* Poster */}
-                                            <div className="aspect-[2/3] bg-slate-800 relative">
-                                                {item.thumb ? (
-                                                    <img
-                                                        src={item.thumb}
-                                                        alt={item.title}
-                                                        className="w-full h-full object-cover"
-                                                        loading="lazy"
-                                                    />
-                                                ) : (
-                                                    <div className="w-full h-full flex items-center justify-center text-slate-600 text-xs">
-                                                        No Poster
-                                                    </div>
-                                                )}
-                                                {selectedMovies.has(item.rating_key) && (
-                                                    <div className="absolute top-2 right-2 bg-primary text-white rounded-full p-1">
-                                                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                                                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                                        </svg>
-                                                    </div>
-                                                )}
-                                            </div>
-
-                                            {/* Info */}
-                                            <div className="p-2">
-                                                <h3 className="text-white font-medium text-xs truncate">{item.title}</h3>
-                                                {item.year && <p className="text-slate-400 text-xs">{item.year}</p>}
-                                            </div>
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        ) : newCollectionLibrary.trim() ? (
-                            <div className="text-slate-400 text-center py-8">
-                                {movieSearchQuery ? "No results found" : "No items found in this library"}
-                            </div>
-                        ) : (
-                            <div className="text-slate-400 text-center py-8">
-                                Enter a library name to see available items
+                                <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">
+                                    Items (choose at least one)
+                                </label>
+                                {newCollectionLibrary ? (
+                                    <ItemFinder key={newCollectionLibrary} library={newCollectionLibrary} selected={selectedMovies} onSelectedChange={setSelectedMovies} />
+                                ) : (
+                                    <p className="text-sm text-slate-500">Choose a library first.</p>
+                                )}
                             </div>
                         )}
                     </div>
-                    )}
 
                     <DialogFooter className="bg-slate-950/50">
                         <p className="text-sm text-slate-400">
@@ -1090,7 +928,7 @@ export default function CollectionsPage() {
                                     : "Finish the filters to create the collection"
                                 : selectedMovies.size === 0
                                   ? "Select at least one item to create the collection"
-                                  : `${selectedMovies.size} item(s) selected`}
+                                  : `${selectedMovies.size} item${selectedMovies.size === 1 ? "" : "s"} selected`}
                         </p>
                         <div className="flex items-center gap-3">
                             <button
@@ -1113,7 +951,11 @@ export default function CollectionsPage() {
                                 }
                                 className="px-4 py-2 rounded-lg bg-primary hover:bg-primary-hover text-white text-sm font-bold shadow-lg shadow-primary/30 hover:shadow-primary/40 transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                {creating ? "Creating..." : newCollectionKind === "smart" ? "Create Smart Collection" : "Create Collection"}
+                                {creating
+                                    ? "Creating..."
+                                    : newCollectionKind === "smart"
+                                      ? "Create Smart Collection"
+                                      : `Create Collection with ${selectedMovies.size} item${selectedMovies.size === 1 ? "" : "s"}`}
                             </button>
                         </div>
                     </DialogFooter>

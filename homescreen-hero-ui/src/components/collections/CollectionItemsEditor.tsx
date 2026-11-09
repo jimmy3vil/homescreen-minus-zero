@@ -10,14 +10,14 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Check, GripVertical, Loader2, Plus, Search, Trash2 } from "lucide-react";
+import { GripVertical, Loader2, Plus, Trash2 } from "lucide-react";
 import { fetchWithAuth } from "../../utils/api";
+import ItemFinder from "./ItemFinder";
 
 // The items in a manual collection: add from the library, remove, and (when
 // the collection's item order is Custom) drag to arrange.
 
 type Item = { rating_key: string; title: string; year: string | number | null; poster_url: string | null };
-type SearchItem = { rating_key: string; title: string; year: number | null; thumb: string | null; in_collection?: boolean };
 
 type Props = {
     base: string; // /api/collections/library/{library}/collection/{id}
@@ -65,9 +65,6 @@ export default function CollectionItemsEditor({ base, library, customOrder, onCh
     const [error, setError] = useState<string | null>(null);
     const [removing, setRemoving] = useState<string | null>(null);
 
-    const [query, setQuery] = useState("");
-    const [results, setResults] = useState<SearchItem[]>([]);
-    const [searching, setSearching] = useState(false);
     const [selected, setSelected] = useState<Set<string>>(new Set());
     const [adding, setAdding] = useState(false);
 
@@ -90,21 +87,6 @@ export default function CollectionItemsEditor({ base, library, customOrder, onCh
         load();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [base]);
-
-    // Search the library to add items
-    useEffect(() => {
-        if (!query.trim()) return;
-        const t = setTimeout(async () => {
-            setSearching(true);
-            try {
-                const r = await fetchWithAuth(`/api/collections/${encodeURIComponent(library)}/search?query=${encodeURIComponent(query.trim())}`);
-                setResults(r.ok ? ((await r.json()).items ?? []).slice(0, 30) : []);
-            } finally {
-                setSearching(false);
-            }
-        }, 300);
-        return () => clearTimeout(t);
-    }, [query, library]);
 
     const inCollection = new Set((items ?? []).map((i) => i.rating_key));
 
@@ -134,9 +116,8 @@ export default function CollectionItemsEditor({ base, library, customOrder, onCh
             });
             if (!r.ok) throw new Error(await readError(r, "Couldn't add the items"));
             const { added } = await r.json();
+            if (added < selected.size) setError(`${plural(selected.size - added, "item")} were already in this collection`);
             setSelected(new Set());
-            setQuery("");
-            setResults([]);
             onChanged(`Added ${plural(added, "item")} to this collection`);
             await load();
         } catch (e) {
@@ -172,51 +153,7 @@ export default function CollectionItemsEditor({ base, library, customOrder, onCh
         <div className="space-y-5">
             <div className="space-y-2">
                 <span className="block text-xs font-medium uppercase tracking-wider text-slate-400">Add items from {library}</span>
-                <div className="relative">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
-                    <input
-                        value={query}
-                        onChange={(e) => {
-                            setQuery(e.target.value);
-                            if (!e.target.value.trim()) setResults([]);
-                        }}
-                        placeholder="Search this library…"
-                        className="w-full rounded-lg border border-slate-700 bg-slate-800/60 py-2 pl-9 pr-9 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary/70"
-                    />
-                    {searching && <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-slate-400" />}
-                </div>
-                {query.trim() && results.length > 0 && (
-                    <div className="max-h-64 overflow-y-auto rounded-lg border border-slate-800 divide-y divide-slate-800">
-                        {results.map((r) => {
-                            const already = inCollection.has(r.rating_key);
-                            const isSelected = selected.has(r.rating_key);
-                            return (
-                                <button
-                                    key={r.rating_key}
-                                    type="button"
-                                    disabled={already}
-                                    onClick={() =>
-                                        setSelected((s) => {
-                                            const next = new Set(s);
-                                            if (next.has(r.rating_key)) next.delete(r.rating_key);
-                                            else next.add(r.rating_key);
-                                            return next;
-                                        })
-                                    }
-                                    className="flex w-full items-center gap-3 px-3 py-1.5 text-left hover:bg-slate-800 disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent"
-                                >
-                                    <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${isSelected || already ? "border-primary bg-primary" : "border-slate-600"}`}>
-                                        {(isSelected || already) && <Check className="h-3 w-3 text-white" />}
-                                    </span>
-                                    <span className="flex-1 truncate text-sm text-white">
-                                        {r.title} {r.year && <span className="text-slate-500">({r.year})</span>}
-                                    </span>
-                                    {already && <span className="text-[10px] uppercase tracking-wide text-slate-400">in collection</span>}
-                                </button>
-                            );
-                        })}
-                    </div>
-                )}
+                <ItemFinder library={library} selected={selected} onSelectedChange={setSelected} existing={inCollection} />
                 {selected.size > 0 && (
                     <button
                         type="button"

@@ -1474,7 +1474,7 @@ export default function GroupsPage() {
                                     id="new-group-library"
                                     value={newGroupLibrary}
                                     onChange={(e) => { setNewGroupLibrary(e.target.value); setCreateError(null); }}
-                                    className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-primary/70 text-sm"
+                                    className="w-full pl-4 pr-10 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-primary/70 text-sm"
                                 >
                                     <option value="" disabled>Choose a library…</option>
                                     {[...libraries].sort((a, b) => Number(b.enabled) - Number(a.enabled)).map((lib) => (

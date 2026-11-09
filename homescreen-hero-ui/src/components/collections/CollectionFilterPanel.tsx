@@ -15,11 +15,13 @@ import { InfoTooltip } from "../ui/info-tooltip";
 import {
     DATE_OPS,
     NO_GROUP,
+    NO_TYPE,
     NUM_OPS,
     TEXT_OPS,
     TOTAL_PLAYS_HINT,
     clearAllFilters,
     type CollectionFilters,
+    type CollectionTypeDef,
     type DateFilter,
     type NumFilter,
     type TextFilter,
@@ -51,7 +53,7 @@ function TextRule({ value, onChange, placeholder }: { value?: TextFilter; onChan
                     setOp(next);
                     if (value?.value) onChange({ op: next, value: value.value });
                 }}
-                className={field}
+                className={`${field} pr-10`}
             >
                 {TEXT_OPS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
             </select>
@@ -76,7 +78,7 @@ function NumRule({ value, onChange, unit }: { value?: NumFilter; onChange: (v?: 
                     setOp(next);
                     if (value) onChange({ op: next, value: value.value });
                 }}
-                className={field}
+                className={`${field} pr-10`}
             >
                 {NUM_OPS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
             </select>
@@ -107,7 +109,7 @@ function DateRule({ value, onChange }: { value?: DateFilter; onChange: (v?: Date
                     // Days and dates aren't interchangeable, so switching between them clears the value
                     if (value) onChange(nextRelative === relative ? { op: next, value: value.value } : undefined);
                 }}
-                className={field}
+                className={`${field} pr-10`}
             >
                 {DATE_OPS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
             </select>
@@ -213,11 +215,12 @@ type Props = {
     onChange: (f: CollectionFilters) => void;
     groups: string[];
     labels: string[];
+    types: CollectionTypeDef[];
     matchingCount: number;
     totalCount: number;
 };
 
-export default function CollectionFilterPanel({ open, onOpenChange, library, filters, onChange, groups, labels, matchingCount, totalCount }: Props) {
+export default function CollectionFilterPanel({ open, onOpenChange, library, filters, onChange, groups, labels, types, matchingCount, totalCount }: Props) {
     const set = <K extends keyof CollectionFilters>(key: K, value: CollectionFilters[K] | undefined) => {
         const next = { ...filters };
         if (value === undefined || value === false || value === "") delete next[key];
@@ -245,8 +248,24 @@ export default function CollectionFilterPanel({ open, onOpenChange, library, fil
                         <TextRule value={filters.sortTitle} onChange={(v) => set("sortTitle", v)} placeholder="Sort title" />
                     </Section>
 
-                    <Section title="Type">
-                        <select value={filters.kind ?? ""} onChange={(e) => set("kind", (e.target.value || undefined) as CollectionFilters["kind"])} className={`${field} w-full`}>
+                    <Section title="Collection type">
+                        <select
+                            value={filters.type?.id ?? ""}
+                            onChange={(e) => {
+                                const id = e.target.value;
+                                const name = id === NO_TYPE ? "No collection type" : types.find((t) => String(t.id) === id)?.name ?? id;
+                                set("type", id ? { id, name } : undefined);
+                            }}
+                            className={`${field} w-full pr-10`}
+                        >
+                            <option value="">Any collection type</option>
+                            <option value={NO_TYPE}>No collection type</option>
+                            {types.map((t) => <option key={t.id ?? t.name} value={String(t.id)}>{t.name}</option>)}
+                        </select>
+                    </Section>
+
+                    <Section title="Smart or manual">
+                        <select value={filters.kind ?? ""} onChange={(e) => set("kind", (e.target.value || undefined) as CollectionFilters["kind"])} className={`${field} w-full pr-10`}>
                             <option value="">Smart and manual collections</option>
                             <option value="smart">Smart collections only</option>
                             <option value="static">Manual collections only</option>
@@ -254,7 +273,7 @@ export default function CollectionFilterPanel({ open, onOpenChange, library, fil
                     </Section>
 
                     <Section title="Group">
-                        <select value={filters.group ?? ""} onChange={(e) => set("group", e.target.value || undefined)} className={`${field} w-full`}>
+                        <select value={filters.group ?? ""} onChange={(e) => set("group", e.target.value || undefined)} className={`${field} w-full pr-10`}>
                             <option value="">Any group, or none</option>
                             <option value={NO_GROUP}>Not in any group</option>
                             {groups.map((g) => <option key={g} value={g}>{g}</option>)}
@@ -262,7 +281,7 @@ export default function CollectionFilterPanel({ open, onOpenChange, library, fil
                     </Section>
 
                     <Section title="Label">
-                        <select value={filters.label ?? ""} onChange={(e) => set("label", e.target.value || undefined)} className={`${field} w-full`}>
+                        <select value={filters.label ?? ""} onChange={(e) => set("label", e.target.value || undefined)} className={`${field} w-full pr-10`}>
                             <option value="">Any label</option>
                             {labels.map((l) => <option key={l} value={l}>{l}</option>)}
                         </select>
@@ -307,7 +326,7 @@ export default function CollectionFilterPanel({ open, onOpenChange, library, fil
                                                   : undefined
                                         )
                                     }
-                                    className={field}
+                                    className={`${field} pr-10`}
                                 >
                                     <option value="">Any last rotation</option>
                                     <option value="never">Never rotated</option>

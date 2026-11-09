@@ -28,13 +28,35 @@ export type CollectionOverview = {
     total_plays: number | null;
     latest_item_added_at: string | null;
     trending: boolean;
+    type: CollectionTypeRef | null;
 };
+
+// A collection's type, and how it was worked out
+export type CollectionTypeRef = {
+    id: number;
+    name: string;
+    color: string;
+    source: "manual" | "label" | "prefix" | "group";
+    matched: string | null;
+};
+
+// A type as defined in the library's Collection types list
+export type CollectionTypeDef = {
+    id: number | null;
+    name: string;
+    color: string;
+    labels: string[];
+    prefixes: string[];
+    groups: string[];
+};
+
+export const NO_TYPE = "none";
 
 export type Scope = "all" | "rotation" | "pinned";
 export type TextOp = "contains" | "not_contains" | "is" | "is_not" | "starts" | "ends";
 export type NumOp = "eq" | "ne" | "gt" | "gte" | "lt" | "lte";
 export type DateOp = "after" | "before" | "last" | "not_last";
-export type SortKey = "title" | "sort_title" | "added_at" | "updated_at" | "item_count" | "times_rotated" | "total_plays";
+export type SortKey = "title" | "sort_title" | "type" | "added_at" | "updated_at" | "item_count" | "times_rotated" | "total_plays";
 
 export type TextFilter = { op: TextOp; value: string };
 export type NumFilter = { op: NumOp; value: number };
@@ -47,6 +69,7 @@ export type CollectionFilters = {
     title?: TextFilter;
     sortTitle?: TextFilter;
     kind?: "smart" | "static";
+    type?: { id: string; name: string }; // type id, or NO_TYPE
     group?: string; // group name, or NO_GROUP
     label?: string;
     empty?: boolean;
@@ -95,6 +118,7 @@ export const DATE_OPS: { key: DateOp; label: string }[] = [
 export const SORTS: { key: SortKey; label: string }[] = [
     { key: "sort_title", label: "Sort title" },
     { key: "title", label: "Title" },
+    { key: "type", label: "Collection type" },
     { key: "added_at", label: "Date created" },
     { key: "updated_at", label: "Date modified" },
     { key: "item_count", label: "Number of items" },
@@ -162,6 +186,7 @@ export function applyFilters(
         if (f.title && f.title.value && !matchText(c.title, f.title)) return false;
         if (f.sortTitle && f.sortTitle.value && !matchText(c.sort_title, f.sortTitle)) return false;
         if (f.kind && (f.kind === "smart") !== c.smart) return false;
+        if (f.type && (f.type.id === NO_TYPE ? c.type !== null : String(c.type?.id) !== f.type.id)) return false;
         if (f.group === NO_GROUP && c.groups.length > 0) return false;
         if (f.group && f.group !== NO_GROUP && !c.groups.includes(f.group)) return false;
         if (f.label && !c.labels.includes(f.label)) return false;
@@ -193,6 +218,8 @@ export function sortCollections(collections: CollectionOverview[], sort: SortKey
         switch (sort) {
             case "title": return c.title;
             case "sort_title": return c.sort_title;
+            // Collections without a type sort after those with one
+            case "type": return c.type ? c.type.name : "\uffff";
             case "added_at": return c.added_at ? new Date(c.added_at).getTime() : 0;
             case "updated_at": return c.updated_at ? new Date(c.updated_at).getTime() : 0;
             case "item_count": return c.item_count;
@@ -226,6 +253,7 @@ export function activeFilterChips(f: CollectionFilters): { key: FilterKey; label
     if (f.q.trim()) chips.push({ key: "q", label: `Search: "${f.q.trim()}"` });
     if (f.title?.value) chips.push({ key: "title", label: `Title ${textOpLabel(f.title.op)} "${f.title.value}"` });
     if (f.sortTitle?.value) chips.push({ key: "sortTitle", label: `Sort title ${textOpLabel(f.sortTitle.op)} "${f.sortTitle.value}"` });
+    if (f.type) chips.push({ key: "type", label: f.type.id === NO_TYPE ? "No collection type" : `Type: ${f.type.name}` });
     if (f.kind) chips.push({ key: "kind", label: f.kind === "smart" ? "Smart collections" : "Manual collections" });
     if (f.group) chips.push({ key: "group", label: f.group === NO_GROUP ? "Not in any group" : `In group: ${f.group}` });
     if (f.label) chips.push({ key: "label", label: `Label: ${f.label}` });
@@ -273,6 +301,7 @@ export function filtersToParams(f: CollectionFilters): URLSearchParams {
     if (f.title?.value) p.set("title", enc(f.title.op, f.title.value));
     if (f.sortTitle?.value) p.set("stitle", enc(f.sortTitle.op, f.sortTitle.value));
     if (f.kind) p.set("kind", f.kind);
+    if (f.type) p.set("type", enc(f.type.id, f.type.name));
     if (f.group) p.set("group", f.group);
     if (f.label) p.set("label", f.label);
     if (f.empty) p.set("empty", "1");
@@ -313,6 +342,8 @@ export function paramsToFilters(p: URLSearchParams): CollectionFilters {
     f.sortTitle = text(p.get("stitle"));
     const kind = p.get("kind");
     if (kind === "smart" || kind === "static") f.kind = kind;
+    const type = dec(p.get("type"));
+    if (type) f.type = { id: type[0], name: type[1] };
     f.group = p.get("group") ?? undefined;
     f.label = p.get("label") ?? undefined;
     if (p.get("empty") === "1") f.empty = true;

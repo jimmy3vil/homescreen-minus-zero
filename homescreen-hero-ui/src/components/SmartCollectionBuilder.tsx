@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Combobox, ComboboxButton, ComboboxInput, ComboboxOption, ComboboxOptions } from "@headlessui/react";
 import { ChevronDown, Loader2, Plus, Trash2 } from "lucide-react";
 import { fetchWithAuth } from "../utils/api";
+import MatchPreview, { type ItemSelection } from "./collections/MatchPreview";
 
 // Mirrors Plex's smart collection editor: pick the item type, match all/any of
-// a list of rules (field, operator, value), then an optional sort and limit.
+// a list of rules (field, operator, value) and rule groups (each with its own
+// all/any, which can hold more groups), then an optional sort and limit.
 // Fields, operators, sorts and tag values all come from the Plex library.
 
 type SchemaField = { key: string; title: string; type: string; has_choices: boolean };
@@ -30,21 +32,31 @@ type Rule = {
     relUnit?: "d" | "w" | "m" | "y";
 };
 
+type Group = { id: number; match: "all" | "any"; children: Node[] };
+type Node = ({ kind: "rule" } & Rule) | ({ kind: "group" } & Group);
+
+// Plex's format for rule groups, as sent to and read from the server
+export type PlexRule = { field: string; operator: string; value: string };
+export type PlexTree = { match: "all" | "any"; conditions: (PlexRule | PlexTree)[] };
+
 export type SmartQuery = {
     libtype: string;
     match: "all" | "any";
-    rules: { field: string; operator: string; value: string }[];
+    rules: PlexRule[]; // every rule, flattened (the tree is what's saved)
+    tree: PlexTree;
     sort: string | null;
     limit: number | null;
 };
 
-type PreviewItem = { title: string; year: string | null; poster_url: string | null; rating_key: string };
+const MAX_DEPTH = 5;
+
 
 // A smart collection's current filters, as read back from Plex
 export type InitialSmartQuery = {
     libtype: string;
     match: "all" | "any";
-    rules: { field: string; operator: string; value: string }[];
+    rules: PlexRule[];
+    tree?: PlexTree;
     sort: string | null;
     limit: number | null;
 };
@@ -52,13 +64,41 @@ export type InitialSmartQuery = {
 type Props = {
     library: string; // the parent keys this component by library, so a new library starts fresh
     initial?: InitialSmartQuery;
-    onChange: (query: SmartQuery | null) => void; // null while the rules are incomplete
+    onChange?: (query: SmartQuery | null) => void; // null while the rules are incomplete
+    // Finding items for a manual collection: matches can be ticked instead
+    selection?: ItemSelection;
 };
 
 const inputClass =
     "rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary/70";
 
+// The global select style draws its arrow at the right; keep text clear of it
+const selectClass = `${inputClass} pr-10`;
+
 let nextRuleId = 1;
+
+const isPlexGroup = (c: PlexRule | PlexTree): c is PlexTree => "conditions" in c;
+
+function groupFromPlex(t: PlexTree): Group {
+    return {
+        id: nextRuleId++,
+        match: t.match,
+        children: t.conditions.map((c) =>
+            isPlexGroup(c) ? { kind: "group" as const, ...groupFromPlex(c) } : { kind: "rule" as const, ...ruleFromPlex(c) }
+        ),
+    };
+}
+
+// Tree helpers: apply a change to the node with this id, wherever it is
+function mapGroup(g: Group, fn: (n: Node) => Node | null): Group {
+    return {
+        ...g,
+        children: g.children
+            .map((n) => fn(n))
+            .filter((n): n is Node => n !== null)
+            .map((n) => (n.kind === "group" ? { ...n, ...mapGroup(n, fn) } : n)),
+    };
+}
 
 // Plex stores dates as "-30d" (relative) or a unix timestamp (absolute)
 function ruleFromPlex(r: { field: string; operator: string; value: string }): Rule {
@@ -154,20 +194,17 @@ function ChoicePicker({
     );
 }
 
-export default function SmartCollectionBuilder({ library, initial, onChange }: Props) {
+export default function SmartCollectionBuilder({ library, initial, onChange, selection }: Props) {
     const [schema, setSchema] = useState<Schema | null>(null);
     const [schemaError, setSchemaError] = useState<string | null>(null);
     const [libtype, setLibtype] = useState<string | null>(initial?.libtype ?? null);
-    const [match, setMatch] = useState<"all" | "any">(initial?.match ?? "all");
-    const [rules, setRules] = useState<Rule[]>(() => (initial?.rules ?? []).map(ruleFromPlex));
+    const [root, setRoot] = useState<Group>(() =>
+        groupFromPlex(initial?.tree ?? { match: initial?.match ?? "all", conditions: initial?.rules ?? [] })
+    );
     const [sortKey, setSortKey] = useState<string>(initial?.sort?.split(":")[0] ?? "");
     const [sortDesc, setSortDesc] = useState(initial?.sort?.endsWith(":desc") ?? false);
     const [limit, setLimit] = useState<string>(initial?.limit ? String(initial.limit) : "");
 
-    const [preview, setPreview] = useState<{ count: number; items: PreviewItem[] } | null>(null);
-    const [previewError, setPreviewError] = useState<string | null>(null);
-    const [previewLoading, setPreviewLoading] = useState(false);
-    const previewTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
     // Load fields/operators/sorts for this library and item type
     useEffect(() => {
@@ -194,7 +231,7 @@ export default function SmartCollectionBuilder({ library, initial, onChange }: P
     // A different item type has different fields, so its rules start over
     const changeLibtype = (next: string) => {
         setLibtype(next);
-        setRules([]);
+        setRoot((r) => ({ ...r, children: [] }));
         setSortKey("");
     };
 
@@ -203,15 +240,32 @@ export default function SmartCollectionBuilder({ library, initial, onChange }: P
         [schema]
     );
 
-    const addRule = () => {
+    const newRule = (): Node | null => {
         const first = schema?.fields.find((f) => f.key.split(".").pop() === "genre") ?? schema?.fields[0];
-        if (!first) return;
+        if (!first) return null;
         const op = schema?.operators[first.type]?.[0]?.key ?? "=";
-        setRules((r) => [...r, { id: nextRuleId++, field: first.key, operator: op, value: "", dateMode: "relative", relUnit: "d" }]);
+        return { kind: "rule", id: nextRuleId++, field: first.key, operator: op, value: "", dateMode: "relative", relUnit: "d" };
     };
 
+    // Add a rule or a new group (holding one rule) to the group with this id
+    const addTo = (groupId: number, what: "rule" | "group") => {
+        const rule = newRule();
+        if (!rule) return;
+        const node: Node = what === "rule" ? rule : { kind: "group", id: nextRuleId++, match: "any", children: [rule] };
+        setRoot((r) =>
+            r.id === groupId
+                ? { ...r, children: [...r.children, node] }
+                : mapGroup(r, (n) => (n.kind === "group" && n.id === groupId ? { ...n, children: [...n.children, node] } : n))
+        );
+    };
+
+    const removeNode = (id: number) => setRoot((r) => mapGroup(r, (n) => (n.id === id ? null : n)));
+
+    const setGroupMatch = (groupId: number, m: "all" | "any") =>
+        setRoot((r) => (r.id === groupId ? { ...r, match: m } : mapGroup(r, (n) => (n.kind === "group" && n.id === groupId ? { ...n, match: m } : n))));
+
     const updateRule = (id: number, patch: Partial<Rule>) =>
-        setRules((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+        setRoot((r) => mapGroup(r, (n) => (n.kind === "rule" && n.id === id ? { ...n, ...patch } : n)));
 
     const changeField = (id: number, fieldKey: string) => {
         const f = fieldsByKey[fieldKey];
@@ -222,8 +276,24 @@ export default function SmartCollectionBuilder({ library, initial, onChange }: P
     // Build the query the parent will submit; null while anything is incomplete
     const query: SmartQuery | null = useMemo(() => {
         if (!schema || !libtype) return null;
-        const built = rules.map((r) => ({ field: r.field, operator: r.operator, value: ruleValue(r, fieldsByKey[r.field]) }));
-        if (built.some((r) => !r.value)) return null;
+        // Incomplete while any rule lacks a value or any group is empty
+        let complete = true;
+        const flat: PlexRule[] = [];
+        const toPlex = (g: Group, depth: number): PlexTree => {
+            if (depth > 0 && g.children.length === 0) complete = false;
+            return {
+                match: g.match,
+                conditions: g.children.map((n) => {
+                    if (n.kind === "group") return toPlex(n, depth + 1);
+                    const rule = { field: n.field, operator: n.operator, value: ruleValue(n, fieldsByKey[n.field]) };
+                    if (!rule.value) complete = false;
+                    flat.push(rule);
+                    return rule;
+                }),
+            };
+        };
+        const tree = toPlex(root, 0);
+        if (!complete) return null;
         const limitNum = limit.trim() ? Number(limit) : null;
         if (limitNum !== null && (!Number.isInteger(limitNum) || limitNum < 1)) return null;
         const sort = sortKey
@@ -231,94 +301,27 @@ export default function SmartCollectionBuilder({ library, initial, onChange }: P
                 ? schema.sorts.find((s) => s.key === sortKey)?.desc_key ?? `${sortKey}:desc`
                 : sortKey
             : null;
-        return { libtype, match, rules: built, sort, limit: limitNum };
-    }, [schema, libtype, rules, fieldsByKey, match, sortKey, sortDesc, limit]);
+        return { libtype, match: root.match, rules: flat, tree, sort, limit: limitNum };
+    }, [schema, libtype, root, fieldsByKey, sortKey, sortDesc, limit]);
 
     const queryJson = JSON.stringify(query);
     useEffect(() => {
-        onChange(query);
+        onChange?.(query);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [queryJson]);
 
-    // Live preview of matching items
-    useEffect(() => {
-        clearTimeout(previewTimer.current);
-        if (!query) {
-            setPreview(null);
-            setPreviewError(null);
-            return;
-        }
-        previewTimer.current = setTimeout(async () => {
-            setPreviewLoading(true);
-            try {
-                const r = await fetchWithAuth(`/api/collections/${encodeURIComponent(library)}/smart-preview`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: queryJson,
-                });
-                const data = await r.json();
-                if (!r.ok) throw new Error(data?.detail ?? "Preview failed");
-                setPreview(data);
-                setPreviewError(null);
-            } catch (e) {
-                setPreview(null);
-                setPreviewError(e instanceof Error ? e.message : String(e));
-            } finally {
-                setPreviewLoading(false);
-            }
-        }, 600);
-        return () => clearTimeout(previewTimer.current);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [queryJson, library]);
-
-    if (schemaError) {
-        return <p className="text-sm text-red-400">{schemaError}</p>;
-    }
-    if (!schema) {
-        return (
-            <div className="flex items-center gap-2 text-sm text-slate-400">
-                <Loader2 className="h-4 w-4 animate-spin" /> Loading filters from Plex…
-            </div>
-        );
-    }
-
-    return (
-        <div className="space-y-4">
-            <div className="flex flex-wrap items-center gap-2 text-sm text-slate-300">
-                {schema.libtypes.length > 1 && (
-                    <>
-                        <span>Collect</span>
-                        <select value={libtype ?? ""} onChange={(e) => changeLibtype(e.target.value)} className={inputClass}>
-                            {schema.libtypes.map((t) => (
-                                <option key={t.key} value={t.key}>{t.title}</option>
-                            ))}
-                        </select>
-                        <span>that match</span>
-                    </>
-                )}
-                {schema.libtypes.length <= 1 && <span>Match</span>}
-                <select value={match} onChange={(e) => setMatch(e.target.value as "all" | "any")} className={inputClass}>
-                    <option value="all">all</option>
-                    <option value="any">any</option>
-                </select>
-                <span>of the following:</span>
-            </div>
-
-            <div className="space-y-2">
-                {rules.length === 0 && (
-                    <p className="text-sm text-slate-500">No rules yet: every item in the library will match.</p>
-                )}
-                {rules.map((rule) => {
+    const renderRule = (rule: Rule) => {
+                    if (!schema) return null;
                     const f = fieldsByKey[rule.field];
                     const ops = schema.operators[f?.type] ?? [];
                     return (
                         <div key={rule.id} className="flex flex-wrap items-center gap-2">
-                            <select value={rule.field} onChange={(e) => changeField(rule.id, e.target.value)} className={inputClass}>
+                            <select value={rule.field} onChange={(e) => changeField(rule.id, e.target.value)} className={selectClass}>
                                 {schema.fields.map((field) => (
                                     <option key={field.key} value={field.key}>{field.title}</option>
                                 ))}
                             </select>
-                            <select value={rule.operator} onChange={(e) => updateRule(rule.id, { operator: e.target.value })} className={inputClass}>
+                            <select value={rule.operator} onChange={(e) => updateRule(rule.id, { operator: e.target.value })} className={selectClass}>
                                 {ops.map((o) => (
                                     <option key={o.key} value={o.key}>{o.title}</option>
                                 ))}
@@ -338,7 +341,7 @@ export default function SmartCollectionBuilder({ library, initial, onChange }: P
                                     <select
                                         value={rule.dateMode ?? "relative"}
                                         onChange={(e) => updateRule(rule.id, { dateMode: e.target.value as "absolute" | "relative" })}
-                                        className={inputClass}
+                                        className={selectClass}
                                     >
                                         <option value="relative">a time ago</option>
                                         <option value="absolute">a date</option>
@@ -357,7 +360,7 @@ export default function SmartCollectionBuilder({ library, initial, onChange }: P
                                             <select
                                                 value={rule.relUnit ?? "d"}
                                                 onChange={(e) => updateRule(rule.id, { relUnit: e.target.value as Rule["relUnit"] })}
-                                                className={inputClass}
+                                                className={selectClass}
                                             >
                                                 <option value="d">days ago</option>
                                                 <option value="w">weeks ago</option>
@@ -378,7 +381,7 @@ export default function SmartCollectionBuilder({ library, initial, onChange }: P
 
                             <button
                                 type="button"
-                                onClick={() => setRules((rs) => rs.filter((r) => r.id !== rule.id))}
+                                onClick={() => removeNode(rule.id)}
                                 className="p-2 text-slate-500 hover:text-red-400 transition-colors"
                                 aria-label="Remove rule"
                             >
@@ -386,26 +389,101 @@ export default function SmartCollectionBuilder({ library, initial, onChange }: P
                             </button>
                         </div>
                     );
-                })}
-                <button
-                    type="button"
-                    onClick={addRule}
-                    className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:text-primary/80 transition-colors"
-                >
-                    <Plus className="h-4 w-4" /> Add rule
+    };
+
+    const addButtons = (group: Group, depth: number) => (
+        <div className="flex flex-wrap gap-4">
+            <button type="button" onClick={() => addTo(group.id, "rule")} className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:text-primary/80 transition-colors">
+                <Plus className="h-4 w-4" /> Add rule
+            </button>
+            {depth < MAX_DEPTH && (
+                <button type="button" onClick={() => addTo(group.id, "group")} className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:text-primary/80 transition-colors">
+                    <Plus className="h-4 w-4" /> Add group
                 </button>
+            )}
+        </div>
+    );
+
+    const renderChildren = (group: Group, depth: number) =>
+        group.children.map((n) =>
+            n.kind === "rule" ? (
+                <div key={n.id}>{renderRule(n)}</div>
+            ) : (
+                <div key={n.id} className="space-y-2 rounded-lg border border-slate-700/70 border-l-2 border-l-primary/60 bg-slate-900/40 p-3">
+                    <div className="flex flex-wrap items-center gap-2 text-sm text-slate-300">
+                        <span>Match</span>
+                        <select value={n.match} onChange={(e) => setGroupMatch(n.id, e.target.value as "all" | "any")} className={selectClass}>
+                            <option value="all">all</option>
+                            <option value="any">any</option>
+                        </select>
+                        <span>of:</span>
+                        <button
+                            type="button"
+                            onClick={() => removeNode(n.id)}
+                            className="ml-auto inline-flex items-center gap-1 p-1.5 text-xs text-slate-500 hover:text-red-400 transition-colors"
+                            aria-label="Remove this group and its rules"
+                        >
+                            <Trash2 className="h-4 w-4" /> Remove group
+                        </button>
+                    </div>
+                    {n.children.length === 0 && <p className="text-xs text-amber-300">This group is empty: add a rule or remove it.</p>}
+                    {renderChildren(n, depth + 1)}
+                    {addButtons(n, depth + 1)}
+                </div>
+            )
+        );
+
+    if (schemaError) {
+        return <p className="text-sm text-red-400">{schemaError}</p>;
+    }
+    if (!schema) {
+        return (
+            <div className="flex items-center gap-2 text-sm text-slate-400">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading filters from Plex…
+            </div>
+        );
+    }
+
+    return (
+        <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2 text-sm text-slate-300">
+                {schema.libtypes.length > 1 && (
+                    <>
+                        <span>Collect</span>
+                        <select value={libtype ?? ""} onChange={(e) => changeLibtype(e.target.value)} className={selectClass}>
+                            {schema.libtypes.map((t) => (
+                                <option key={t.key} value={t.key}>{t.title}</option>
+                            ))}
+                        </select>
+                        <span>that match</span>
+                    </>
+                )}
+                {schema.libtypes.length <= 1 && <span>Match</span>}
+                <select value={root.match} onChange={(e) => setGroupMatch(root.id, e.target.value as "all" | "any")} className={selectClass}>
+                    <option value="all">all</option>
+                    <option value="any">any</option>
+                </select>
+                <span>of the following:</span>
+            </div>
+
+            <div className="space-y-2">
+                {root.children.length === 0 && (
+                    <p className="text-sm text-slate-500">No rules yet: every item in the library will match.</p>
+                )}
+                {renderChildren(root, 0)}
+                {addButtons(root, 0)}
             </div>
 
             <div className="flex flex-wrap items-center gap-2 text-sm text-slate-300">
                 <span>Sort by</span>
-                <select value={sortKey} onChange={(e) => setSortKey(e.target.value)} className={inputClass}>
+                <select value={sortKey} onChange={(e) => setSortKey(e.target.value)} className={selectClass}>
                     <option value="">Plex default</option>
                     {schema.sorts.map((s) => (
                         <option key={s.key} value={s.key}>{s.title}</option>
                     ))}
                 </select>
                 {sortKey && (
-                    <select value={sortDesc ? "desc" : "asc"} onChange={(e) => setSortDesc(e.target.value === "desc")} className={inputClass}>
+                    <select value={sortDesc ? "desc" : "asc"} onChange={(e) => setSortDesc(e.target.value === "desc")} className={selectClass}>
                         <option value="asc">ascending</option>
                         <option value="desc">descending</option>
                     </select>
@@ -422,34 +500,7 @@ export default function SmartCollectionBuilder({ library, initial, onChange }: P
                 <span>items</span>
             </div>
 
-            <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
-                <div className="flex items-center gap-2 text-sm text-slate-300 mb-2">
-                    {previewLoading && <Loader2 className="h-4 w-4 animate-spin" />}
-                    {previewError ? (
-                        <span className="text-red-400">{previewError}</span>
-                    ) : !query ? (
-                        <span className="text-slate-500">Finish the rules to see matching items.</span>
-                    ) : preview ? (
-                        <span>
-                            {preview.count} item{preview.count !== 1 ? "s" : ""} match
-                        </span>
-                    ) : null}
-                </div>
-                {preview && preview.items.length > 0 && (
-                    <div className="flex gap-2 overflow-x-auto pb-1">
-                        {preview.items.map((item) => (
-                            <div key={item.rating_key} className="w-20 shrink-0">
-                                <div className="aspect-[2/3] rounded-md bg-slate-800 overflow-hidden">
-                                    {item.poster_url && (
-                                        <img src={item.poster_url} alt={item.title} className="h-full w-full object-cover" loading="lazy" />
-                                    )}
-                                </div>
-                                <p className="mt-1 text-[11px] text-slate-400 truncate" title={item.title}>{item.title}</p>
-                            </div>
-                        ))}
-                    </div>
-                )}
-            </div>
+            <MatchPreview library={library} queryJson={query ? queryJson : null} selection={selection} />
         </div>
     );
 }

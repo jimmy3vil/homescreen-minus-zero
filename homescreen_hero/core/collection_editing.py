@@ -60,6 +60,7 @@ def edit_details(server, collection) -> Dict[str, Any]:
             "sort": parsed["sort"],
             "limit": parsed["limit"],
             "nested": parsed.get("nested", False),
+            "tree": parsed["tree"],
         }
     return {
         "rating_key": str(collection.ratingKey),
@@ -255,15 +256,75 @@ def _require_manual(collection) -> None:
         raise ValueError("A smart collection's items come from its filters")
 
 
+MAX_ITEMS_PER_ADD = 2000
+ADD_BATCH = 100
+
+
+def _batches(keys: List[str], size: int = ADD_BATCH):
+    for i in range(0, len(keys), size):
+        yield keys[i:i + size]
+
+
+def _put_items(server, collection_rating_key, keys: List[str]) -> None:
+    # Add items to a manual collection by ID, without loading each item first
+    from plexapi import utils
+
+    uri = f"{server._uriRoot()}/library/metadata/{','.join(keys)}"
+    server.query(
+        f"/library/collections/{collection_rating_key}/items{utils.joinArgs({'uri': uri})}",
+        method=server._session.put,
+    )
+
+
+def _check_count(keys: List[str]) -> None:
+    if len(keys) > MAX_ITEMS_PER_ADD:
+        raise ValueError(f"That's {len(keys)} items; add at most {MAX_ITEMS_PER_ADD} at a time")
+
+
 def add_items(server, collection, rating_keys: List[str]) -> int:
     _require_manual(collection)
     existing = {str(i.ratingKey) for i in collection.items()}
-    new = [k for k in dict.fromkeys(rating_keys) if k not in existing]
+    new = [str(k) for k in dict.fromkeys(rating_keys) if str(k) not in existing]
     if not new:
         return 0
-    items = [server.fetchItem(int(k)) for k in new]
-    collection.addItems(items)
-    return len(items)
+    _check_count(new)
+    for batch in _batches(new):
+        _put_items(server, collection.ratingKey, batch)
+    return len(new)
+
+
+def create_manual_collection(server, section, title: str, rating_keys: List[str]) -> str:
+    # A manual (static) collection holding these items. Plex needs at least
+    # one item to create it; the rest are added in batches.
+    from plexapi import utils
+
+    title = title.strip()
+    if not title:
+        raise ValueError("Give the collection a name")
+    keys = [str(k) for k in dict.fromkeys(rating_keys)]
+    if not keys:
+        raise ValueError("Choose at least one item")
+    _check_count(keys)
+    if any(c.title == title for c in section.collections()):
+        raise FileExistsError(f"Collection '{title}' already exists in library '{section.title}'")
+
+    first = server.fetchItem(int(keys[0]))
+    first_batch, rest = keys[:ADD_BATCH], keys[ADD_BATCH:]
+    args = {
+        "uri": f"{server._uriRoot()}/library/metadata/{','.join(first_batch)}",
+        "type": utils.searchType(first.type),
+        "title": title,
+        "smart": 0,
+        "sectionId": section.key,
+    }
+    data = server.query(f"/library/collections{utils.joinArgs(args)}", method=server._session.post)
+    created = data[0] if len(data) else None
+    rating_key = created.attrib.get("ratingKey") if created is not None else None
+    if rating_key is None:
+        rating_key = next(str(c.ratingKey) for c in section.collections() if c.title == title)
+    for batch in _batches(rest):
+        _put_items(server, rating_key, batch)
+    return str(rating_key)
 
 
 class _Ref:
@@ -283,3 +344,49 @@ def move_item(collection, rating_key: str, after: Optional[str]) -> None:
     if getattr(collection, "collectionSort", 0) != 2:
         raise ValueError("Set the item order to Custom (Advanced tab) to arrange items by hand")
     collection.moveItem(_Ref(rating_key), after=_Ref(after) if after else None)
+
+
+# ------------------------------------------------------------------ label suggestions
+
+
+
+def shared_traits(items: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    # Genres, studios, decades and content ratings shared by more than half
+    # of the collection's items (and at least 2).
+    # items: [{genres: [...], studio, year, content_rating}]
+    from collections import Counter
+
+    total = len(items)
+    if total < 2:
+        return {"genre": [], "studio": [], "decade": [], "content_rating": []}
+    need = max(2, total // 2 + 1)
+    counters = {k: Counter() for k in ("genre", "studio", "decade", "content_rating")}
+    for it in items:
+        for g in set(it.get("genres") or []):
+            counters["genre"][g] += 1
+        if it.get("studio"):
+            counters["studio"][it["studio"]] += 1
+        year = it.get("year")
+        if year:
+            counters["decade"][f"{int(year) // 10 * 10}s"] += 1
+        if it.get("content_rating"):
+            counters["content_rating"][it["content_rating"]] += 1
+    return {k: [v for v, n in c.most_common() if n >= need] for k, c in counters.items()}
+
+
+def collection_item_traits(server, rating_key: str) -> List[Dict[str, Any]]:
+    data = server.query(
+        f"/library/collections/{rating_key}/children"
+        "?X-Plex-Container-Start=0&X-Plex-Container-Size=10000&includeGuids=0"
+    )
+    items = []
+    for el in data:
+        if not el.attrib.get("ratingKey"):
+            continue
+        items.append({
+            "genres": [g.attrib.get("tag") for g in el.findall("Genre") if g.attrib.get("tag")],
+            "studio": el.attrib.get("studio"),
+            "year": int(el.attrib["year"]) if el.attrib.get("year", "").isdigit() else None,
+            "content_rating": el.attrib.get("contentRating"),
+        })
+    return items

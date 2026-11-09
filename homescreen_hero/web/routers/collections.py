@@ -1301,6 +1301,8 @@ class SmartQueryIn(BaseModel):
     rules: List[SmartRuleIn] = []
     sort: Optional[str] = None
     limit: Optional[int] = None
+    # Rule groups: {"match": "all"|"any", "conditions": [rule | group]}. Overrides match/rules.
+    tree: Optional[dict] = None
 
 
 class CreateSmartCollectionRequest(SmartQueryIn):
@@ -1316,6 +1318,7 @@ def _smart_query(section, payload: SmartQueryIn):
         rules=[SmartRule(field=r.field, operator=r.operator, value=r.value) for r in payload.rules],
         sort=payload.sort or None,
         limit=payload.limit or None,
+        tree=payload.tree,
     )
 
 
@@ -1368,13 +1371,15 @@ def get_smart_filter_choices(
 def preview_smart_collection(
     library: str,
     payload: SmartQueryIn,
+    start: int = 0,
+    size: int = 30,
     _current_user: CurrentUser = Depends(require_admin),
 ) -> dict:
     from homescreen_hero.core.smart_collections import preview
 
     server, section = _enabled_section(library)
     try:
-        result = preview(server, section, _smart_query(section, payload))
+        result = preview(server, section, _smart_query(section, payload), start=max(0, start), size=max(1, min(size, 200)))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -1757,3 +1762,147 @@ def refresh_collection_stats(
 
     threading.Thread(target=run, name="collection-stats", daemon=True).start()
     return {"started": True}
+
+
+@router.get("/library/{library}/collection/{rating_key}/label-suggestions")
+def get_label_suggestions(
+    library: str,
+    rating_key: str,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    # Labels worth adding, from what most of the collection's items share,
+    # the groups it's in, and labels already used in this library.
+    from collections import Counter
+
+    from homescreen_hero.core.collection_editing import collection_item_traits, shared_traits
+
+    server, section, collection = _editable_collection(library, rating_key)
+    try:
+        traits = shared_traits(collection_item_traits(server, rating_key))
+        used = Counter(
+            label.tag
+            for c in section.collections()
+            for label in (getattr(c, "labels", None) or [])
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+    config = load_config()
+    groups = sorted(
+        g.name for g in config.groups
+        if g.library == library and (g.smart is False and collection.title in g.collections)
+    )
+    return {
+        **traits,
+        "groups": groups,
+        "library": [name for name, _ in used.most_common(15)],
+    }
+
+
+
+# ---------------------------------------------------------------- collection types (this app's own metadata)
+
+class CollectionTypeIn(BaseModel):
+    id: Optional[int] = None
+    name: str
+    color: str = "sky"
+    labels: List[str] = []
+    prefixes: List[str] = []
+    groups: List[str] = []
+
+
+class CollectionTypesIn(BaseModel):
+    types: List[CollectionTypeIn]
+
+
+class AssignTypeIn(BaseModel):
+    type_id: Optional[int] = None  # None = work it out automatically
+
+
+@router.get("/library/{library}/types")
+def get_collection_types(
+    library: str,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.collection_types import COLORS, list_types
+
+    _enabled_section(library)
+    return {"types": list_types(library), "colors": COLORS}
+
+
+@router.put("/library/{library}/types")
+def save_collection_types(
+    library: str,
+    payload: CollectionTypesIn,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.collection_types import save_types
+
+    _enabled_section(library)
+    try:
+        return {"types": save_types(library, [t.model_dump() for t in payload.types])}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/library/{library}/collection/{rating_key}/type")
+def assign_collection_type(
+    library: str,
+    rating_key: str,
+    payload: AssignTypeIn,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.collection_types import assign_type
+
+    _enabled_section(library)
+    try:
+        assign_type(library, rating_key, payload.type_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"success": True}
+
+
+# ---------------------------------------------------------------- manual collections built from searches and filters
+
+class CreateManualCollectionIn(BaseModel):
+    title: str
+    rating_keys: List[str]
+
+
+@router.post("/{library}/smart-preview/keys")
+def smart_preview_keys(
+    library: str,
+    payload: SmartQueryIn,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    # IDs of every item matching these rules, for "Select all matching".
+    from homescreen_hero.core.smart_collections import matching_keys
+
+    server, section = _enabled_section(library)
+    try:
+        return matching_keys(server, section, _smart_query(section, payload))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+
+
+@router.post("/{library}/manual")
+def create_manual_collection_endpoint(
+    library: str,
+    payload: CreateManualCollectionIn,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    # A manual collection holding the chosen items, created in one go.
+    from homescreen_hero.core.collection_editing import create_manual_collection
+
+    server, section = _enabled_section(library)
+    try:
+        rating_key = create_manual_collection(server, section, payload.title, payload.rating_keys)
+    except FileExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+    invalidate_collections_cache()
+    return {"success": True, "rating_key": rating_key, "title": payload.title.strip(), "added": len(dict.fromkeys(payload.rating_keys))}

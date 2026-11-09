@@ -87,12 +87,65 @@ def test_item_edits_only_for_manual_collections():
         editing.add_items(None, smart, ["5"])
 
 
-def test_add_items_skips_ones_already_in_the_collection():
-    added = []
-    coll = NS(smart=False, items=lambda: [NS(ratingKey=1)], addItems=lambda items: added.extend(items))
-    server = NS(fetchItem=lambda k: NS(ratingKey=k))
-    assert editing.add_items(server, coll, ["1", "2", "2", "3"]) == 2
-    assert [i.ratingKey for i in added] == [2, 3]
+class _QueryServer:
+    # Records Plex requests; answers collection creation with a new rating key
+    def __init__(self):
+        self.calls = []
+        self.fetchItem = lambda k: NS(ratingKey=k, type="movie")
+
+    def _uriRoot(self):
+        return "server://abc/com.plexapp.plugins.library"
+
+    _session = NS(put="PUT", post="POST")
+
+    def query(self, key, method=None):
+        import xml.etree.ElementTree as ET
+
+        self.calls.append((method, key))
+        root = ET.Element("MediaContainer")
+        ET.SubElement(root, "Directory", ratingKey="900")
+        return root
+
+
+def _added_keys(calls):
+    from urllib.parse import parse_qs, urlparse
+
+    out = []
+    for method, key in calls:
+        uri = parse_qs(urlparse(key).query)["uri"][0]
+        out.append((method, uri.split("/library/metadata/")[1].split(",")))
+    return out
+
+
+def test_add_items_skips_ones_already_in_the_collection_and_batches():
+    server = _QueryServer()
+    coll = NS(smart=False, ratingKey=55, items=lambda: [NS(ratingKey=1)])
+    keys = ["1"] + [str(i) for i in range(2, 252)] + ["2"]
+    assert editing.add_items(server, coll, keys) == 250
+    batches = _added_keys(server.calls)
+    assert [len(b) for _, b in batches] == [100, 100, 50]
+    assert batches[0][1][0] == "2" and all(m == "PUT" for m, _ in batches)
+    assert all("/library/collections/55/items" in k for _, k in server.calls)
+
+
+def test_too_many_items_at_once_is_refused():
+    with pytest.raises(ValueError, match="at most 2000"):
+        editing.add_items(_QueryServer(), NS(smart=False, ratingKey=1, items=lambda: []), [str(i) for i in range(2001)])
+
+
+def test_create_manual_collection_in_one_go():
+    server = _QueryServer()
+    section = NS(key=7, title="Films", collections=lambda: [NS(title="Existing", ratingKey=1)])
+    rk = editing.create_manual_collection(server, section, " Picks ", [str(i) for i in range(1, 151)])
+    assert rk == "900"
+    (create_method, create_key), (add_method, add_key) = server.calls
+    assert create_method == "POST" and "title=Picks" in create_key and "smart=0" in create_key and "sectionId=7" in create_key
+    assert len(_added_keys([(create_method, create_key)])[0][1]) == 100
+    assert add_method == "PUT" and "/library/collections/900/items" in add_key
+    with pytest.raises(FileExistsError):
+        editing.create_manual_collection(server, section, "Existing", ["1"])
+    with pytest.raises(ValueError, match="at least one"):
+        editing.create_manual_collection(server, section, "New", [])
 
 
 def test_move_requires_custom_order():
@@ -104,3 +157,18 @@ def test_move_requires_custom_order():
     editing.move_item(coll, "5", "6")
     editing.move_item(coll, "7", None)
     assert moves == [(5, 6), (7, None)]
+
+
+def test_shared_traits_need_most_items():
+    items = [
+        {"genres": ["Animation", "Family"], "studio": "Pixar", "year": 1995, "content_rating": "G"},
+        {"genres": ["Animation", "Comedy"], "studio": "Pixar", "year": 1999, "content_rating": "G"},
+        {"genres": ["Animation"], "studio": "Disney", "year": 2010, "content_rating": "PG"},
+        {"genres": ["Drama"], "studio": "Pixar", "year": 2019, "content_rating": "G"},
+    ]
+    t = editing.shared_traits(items)
+    assert t["genre"] == ["Animation"]
+    assert t["studio"] == ["Pixar"]
+    assert t["decade"] == []  # 1990s and 2010s are 2 of 4 each: not more than half
+    assert t["content_rating"] == ["G"]
+    assert editing.shared_traits(items[:1])["genre"] == []

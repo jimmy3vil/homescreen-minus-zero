@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Loader2, Upload, X } from "lucide-react";
+import { Check, Loader2, Upload, X } from "lucide-react";
 import { fetchWithAuth } from "../../utils/api";
 import SmartCollectionBuilder, { type InitialSmartQuery, type SmartQuery } from "../SmartCollectionBuilder";
 import CollectionItemsEditor from "./CollectionItemsEditor";
+import type { CollectionTypeDef, CollectionTypeRef } from "./collectionFilters";
 import {
     Sheet,
     SheetBody,
@@ -39,7 +40,7 @@ type Tab = "details" | "items" | "artwork" | "advanced" | "filters";
 type Props = {
     library: string;
     ratingKey: string | null; // null = closed
-    knownLabels: string[];
+    currentType: CollectionTypeRef | null; // the collection's type as worked out now
     onClose: () => void;
     onSaved: (message: string) => void;
 };
@@ -71,23 +72,103 @@ async function readError(r: Response, fallback: string) {
 
 // ------------------------------------------------------------------ details
 
-function LabelEditor({ labels, onChange, known }: { labels: string[]; onChange: (l: string[]) => void; known: string[] }) {
+type LabelSuggestions = {
+    genre: string[];
+    studio: string[];
+    decade: string[];
+    content_rating: string[];
+    groups: string[];
+    library: string[];
+};
+
+const SUGGESTION_ROWS: { key: keyof LabelSuggestions; title: string }[] = [
+    { key: "genre", title: "Genre shared by most items" },
+    { key: "studio", title: "Studio shared by most items" },
+    { key: "decade", title: "Decade shared by most items" },
+    { key: "content_rating", title: "Content rating shared by most items" },
+    { key: "groups", title: "Groups it's in" },
+    { key: "library", title: "Used in this library" },
+];
+
+function LabelEditor({
+    labels,
+    onChange,
+    suggestionsUrl,
+    types,
+    onUseAsType,
+}: {
+    labels: string[];
+    onChange: (l: string[]) => void;
+    suggestionsUrl: string;
+    types: CollectionTypeDef[];
+    // Make collections with this label belong to a type (an existing one by id, or a new one by name)
+    onUseAsType: (label: string, target: { id: number } | { name: string }) => void;
+}) {
     const [input, setInput] = useState("");
+    const [suggestions, setSuggestions] = useState<LabelSuggestions | null>(null);
+    const [loadingSuggestions, setLoadingSuggestions] = useState(true);
+
+    useEffect(() => {
+        let cancelled = false;
+        fetchWithAuth(suggestionsUrl)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d) => !cancelled && setSuggestions(d))
+            .catch(() => !cancelled && setSuggestions(null))
+            .finally(() => !cancelled && setLoadingSuggestions(false));
+        return () => {
+            cancelled = true;
+        };
+    }, [suggestionsUrl]);
+
+    const has = (v: string) => labels.some((l) => l.toLowerCase() === v.toLowerCase());
     const add = (value: string) => {
         const v = value.trim();
-        if (v && !labels.some((l) => l.toLowerCase() === v.toLowerCase())) onChange([...labels, v]);
+        if (v && !has(v)) onChange([...labels, v]);
         setInput("");
     };
-    const suggestions = known.filter(
-        (k) => !labels.includes(k) && (!input || k.toLowerCase().includes(input.toLowerCase()))
-    ).slice(0, 8);
+
+    // Each suggestion appears once, in the first row it belongs to
+    const seen = new Set<string>();
+    const rows = SUGGESTION_ROWS.map((row) => {
+        const values = (suggestions?.[row.key] ?? []).filter((v) => {
+            const k = v.toLowerCase();
+            if (has(v) || seen.has(k) || (input && !k.includes(input.toLowerCase()))) return false;
+            seen.add(k);
+            return true;
+        });
+        return { ...row, values: row.key === "library" ? values.slice(0, 10) : values };
+    }).filter((row) => row.values.length > 0);
+
     return (
-        <div className="space-y-2">
+        <div className="space-y-3">
             <div className="flex flex-wrap gap-1.5">
                 {labels.length === 0 && <span className="text-sm text-slate-500">No labels</span>}
                 {labels.map((l) => (
                     <span key={l} className="inline-flex items-center gap-1 rounded-full border border-slate-600 bg-slate-800 px-2.5 py-1 text-xs text-slate-200">
                         {l}
+                        {types.some((t) => t.labels.includes(l)) ? (
+                            <span className="text-[10px] text-slate-500" title="Collections with this label get this type">
+                                → {types.find((t) => t.labels.includes(l))!.name}
+                            </span>
+                        ) : (
+                            <select
+                                value=""
+                                onChange={(e) => {
+                                    const v = e.target.value;
+                                    if (!v) return;
+                                    onUseAsType(l, v === "__new__" ? { name: l } : { id: Number(v) });
+                                }}
+                                className="max-w-[7rem] rounded border-0 bg-transparent py-0 pl-1 pr-6 text-[10px] text-slate-400 focus:ring-0"
+                                title="Use this label to give collections a type"
+                                aria-label={`Use label ${l} as a collection type`}
+                            >
+                                <option value="">Use as type…</option>
+                                {types.filter((t) => t.id !== null).map((t) => (
+                                    <option key={t.id} value={String(t.id)}>{t.name}</option>
+                                ))}
+                                <option value="__new__">New type "{l}"</option>
+                            </select>
+                        )}
                         <button type="button" onClick={() => onChange(labels.filter((x) => x !== l))} aria-label={`Remove label ${l}`} className="text-slate-400 hover:text-white">
                             <X className="h-3 w-3" />
                         </button>
@@ -106,15 +187,27 @@ function LabelEditor({ labels, onChange, known }: { labels: string[]; onChange: 
                 placeholder="Add a label and press Enter"
                 className={field}
             />
-            {suggestions.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                    {suggestions.map((s) => (
-                        <button key={s} type="button" onClick={() => add(s)} className="rounded-full border border-dashed border-slate-600 px-2.5 py-1 text-xs text-slate-400 hover:border-primary/60 hover:text-white">
-                            + {s}
-                        </button>
-                    ))}
-                </div>
-            )}
+            <div className="space-y-2">
+                <span className="block text-xs text-slate-500">Suggestions: click to add</span>
+                {loadingSuggestions ? (
+                    <p className="flex items-center gap-1.5 text-xs text-slate-500"><Loader2 className="h-3 w-3 animate-spin" /> Looking at this collection's items…</p>
+                ) : rows.length === 0 ? (
+                    <p className="text-xs text-slate-500">{input ? "No suggestions match" : "No suggestions for this collection"}</p>
+                ) : (
+                    rows.map((row) => (
+                        <div key={row.key} className="space-y-1">
+                            <span className="block text-[11px] text-slate-500">{row.title}</span>
+                            <div className="flex flex-wrap gap-1.5">
+                                {row.values.map((v) => (
+                                    <button key={v} type="button" onClick={() => add(v)} className="rounded-full border border-dashed border-slate-600 px-2.5 py-1 text-xs text-slate-300 hover:border-primary/60 hover:text-white">
+                                        + {v}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    ))
+                )}
+            </div>
         </div>
     );
 }
@@ -267,7 +360,7 @@ function ArtworkSlot({
 
 // ------------------------------------------------------------------ panel
 
-export default function EditCollectionPanel({ library, ratingKey, knownLabels, onClose, onSaved }: Props) {
+export default function EditCollectionPanel({ library, ratingKey, currentType, onClose, onSaved }: Props) {
     const [data, setData] = useState<EditData | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [tab, setTab] = useState<Tab>("details");
@@ -283,6 +376,60 @@ export default function EditCollectionPanel({ library, ratingKey, knownLabels, o
     const [itemOrder, setItemOrder] = useState<EditData["collection_sort"]>(null);
     const [filterUser, setFilterUser] = useState<EditData["filter_user"]>(null);
     const [smartQuery, setSmartQuery] = useState<SmartQuery | null>(null);
+    const [types, setTypes] = useState<CollectionTypeDef[]>([]);
+    const [typeSaving, setTypeSaving] = useState(false);
+    const typesUrl = `/api/collections/library/${encodeURIComponent(library)}/types`;
+
+    useEffect(() => {
+        if (!ratingKey) return;
+        fetchWithAuth(typesUrl)
+            .then((r) => (r.ok ? r.json() : { types: [] }))
+            .then((d) => setTypes(d.types ?? []))
+            .catch(() => setTypes([]));
+    }, [ratingKey, typesUrl]);
+
+    // Give this collection a type by hand (null = back to automatic)
+    const setType = async (typeId: number | null) => {
+        setTypeSaving(true);
+        setSaveError(null);
+        try {
+            const r = await fetchWithAuth(`${base}/type`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ type_id: typeId }),
+            });
+            if (!r.ok) throw new Error(await readError(r, "Couldn't set the collection type"));
+            const name = types.find((t) => t.id === typeId)?.name;
+            onSaved(typeId === null ? "Collection type set back to automatic" : `Collection type set to ${name}`);
+        } catch (e) {
+            setSaveError(e instanceof Error ? e.message : String(e));
+        } finally {
+            setTypeSaving(false);
+        }
+    };
+
+    // Make a label mean a type, for every collection in the library with it
+    const useLabelAsType = async (labelName: string, target: { id: number } | { name: string }) => {
+        const next: CollectionTypeDef[] =
+            "id" in target
+                ? types.map((t) => (t.id === target.id ? { ...t, labels: [...t.labels, labelName] } : t))
+                : [...types, { id: null, name: target.name, color: "sky", labels: [labelName], prefixes: [], groups: [] }];
+        setSaveError(null);
+        try {
+            const r = await fetchWithAuth(typesUrl, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ types: next }),
+            });
+            const d = await r.json().catch(() => null);
+            if (!r.ok) throw new Error(d?.detail ?? "Couldn't update the collection types");
+            setTypes(d.types);
+            const typeName = "id" in target ? types.find((t) => t.id === target.id)?.name : target.name;
+            onSaved(`Collections labelled "${labelName}" now get the type ${typeName}${labels.includes(labelName) && !(data?.labels ?? []).includes(labelName) ? " (save details to add the label to this collection)" : ""}`);
+        } catch (e) {
+            setSaveError(e instanceof Error ? e.message : String(e));
+        }
+    };
 
     const base = ratingKey ? `/api/collections/library/${encodeURIComponent(library)}/collection/${ratingKey}` : "";
 
@@ -384,6 +531,31 @@ export default function EditCollectionPanel({ library, ratingKey, knownLabels, o
                     ) : tab === "details" ? (
                         <div className="space-y-5">
                             <div>
+                                <label className={label} htmlFor="edit-type">Collection type</label>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <select
+                                        id="edit-type"
+                                        value={currentType?.source === "manual" ? String(currentType.id) : ""}
+                                        disabled={typeSaving}
+                                        onChange={(e) => setType(e.target.value ? Number(e.target.value) : null)}
+                                        className={`${field} pr-10 sm:w-auto`}
+                                    >
+                                        <option value="">
+                                            Automatic{currentType && currentType.source !== "manual" ? `: ${currentType.name}` : ": none matches"}
+                                        </option>
+                                        {types.filter((t) => t.id !== null).map((t) => (
+                                            <option key={t.id} value={String(t.id)}>{t.name}</option>
+                                        ))}
+                                    </select>
+                                    {typeSaving && <Loader2 className="h-4 w-4 animate-spin text-slate-400" />}
+                                </div>
+                                <p className="mt-1.5 text-xs text-slate-500">
+                                    {currentType && currentType.source !== "manual"
+                                        ? `Worked out from its ${currentType.source === "prefix" ? "sort-title prefix" : currentType.source} "${currentType.matched}". Choose a type to set it by hand.`
+                                        : "Choose a type to set it by hand, or leave on Automatic to use labels, prefixes and groups. Set types up with Collection types on the Collections page."}
+                                </p>
+                            </div>
+                            <div>
                                 <label className={label} htmlFor="edit-title">Title</label>
                                 <input id="edit-title" value={title} onChange={(e) => setTitle(e.target.value)} className={field} />
                                 {title.trim() !== data.title && (
@@ -401,7 +573,13 @@ export default function EditCollectionPanel({ library, ratingKey, knownLabels, o
                             </div>
                             <div>
                                 <span className={label}>Labels</span>
-                                <LabelEditor labels={labels} onChange={setLabels} known={knownLabels} />
+                                <LabelEditor
+                                    labels={labels}
+                                    onChange={setLabels}
+                                    suggestionsUrl={`${base}/label-suggestions`}
+                                    types={types}
+                                    onUseAsType={useLabelAsType}
+                                />
                             </div>
                         </div>
                     ) : tab === "items" ? (
@@ -448,7 +626,7 @@ export default function EditCollectionPanel({ library, ratingKey, knownLabels, o
                             {data.smart ? (
                                 <div>
                                     <label className={label} htmlFor="edit-filter-user">Filter items using</label>
-                                    <select id="edit-filter-user" value={filterUser ?? "admin"} onChange={(e) => setFilterUser(e.target.value as "admin" | "user")} className={field}>
+                                    <select id="edit-filter-user" value={filterUser ?? "admin"} onChange={(e) => setFilterUser(e.target.value as "admin" | "user")} className={`${field} pr-10`}>
                                         <option value="admin">The server admin's access</option>
                                         <option value="user">The viewing user's restrictions</option>
                                     </select>
@@ -457,7 +635,7 @@ export default function EditCollectionPanel({ library, ratingKey, knownLabels, o
                             ) : (
                                 <div>
                                     <label className={label} htmlFor="edit-item-order">Order of items in the collection</label>
-                                    <select id="edit-item-order" value={itemOrder ?? "release"} onChange={(e) => setItemOrder(e.target.value as EditData["collection_sort"])} className={field}>
+                                    <select id="edit-item-order" value={itemOrder ?? "release"} onChange={(e) => setItemOrder(e.target.value as EditData["collection_sort"])} className={`${field} pr-10`}>
                                         <option value="release">Release date</option>
                                         <option value="alpha">Alphabetical</option>
                                         <option value="custom">Custom (as arranged in Plex)</option>
@@ -467,12 +645,6 @@ export default function EditCollectionPanel({ library, ratingKey, knownLabels, o
                         </div>
                     ) : (
                         <div className="space-y-4">
-                            {data.smart_query?.nested && (
-                                <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
-                                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                                    This collection uses groups of rules inside other groups, which this editor shows as one list. Saving here replaces them with the list below.
-                                </div>
-                            )}
                             {data.smart_query && (
                                 <SmartCollectionBuilder
                                     key={`${data.rating_key}-${data.smart_query.libtype}`}

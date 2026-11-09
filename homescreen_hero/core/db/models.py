@@ -441,3 +441,30 @@ class CollectionStats(Base):
     item_count = Column(Integer, nullable=False, default=0)
     plays_30d = Column(Integer, nullable=True)  # None when Tautulli isn't set up
     latest_item_added_at = Column(DateTime, nullable=True)
+
+
+class CollectionType(Base):
+    # This app's own type for collections in one library (e.g. Director, Actor,
+    # Living Community Lists). Matches collections automatically by Plex label,
+    # sort-title prefix or group; collections can also be assigned by hand.
+    __tablename__ = "collection_types"
+
+    id = Column(Integer, primary_key=True, index=True)
+    library = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    color = Column(String, nullable=False, default="sky")
+    position = Column(Integer, nullable=False, default=0)
+    labels = Column(JSON, nullable=False, default=list)
+    prefixes = Column(JSON, nullable=False, default=list)
+    groups = Column(JSON, nullable=False, default=list)
+
+
+class CollectionTypeAssignment(Base):
+    # A collection given a type by hand; wins over any automatic match.
+    # Keyed by Plex rating key so renames don't break it.
+    __tablename__ = "collection_type_assignments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    library = Column(String, nullable=False, index=True)
+    rating_key = Column(String, nullable=False, index=True)
+    type_id = Column(Integer, nullable=False, index=True)

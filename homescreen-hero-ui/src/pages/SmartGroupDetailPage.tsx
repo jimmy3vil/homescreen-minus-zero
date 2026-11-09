@@ -501,7 +501,7 @@ export default function SmartGroupDetailPage() {
                                     <select
                                         value={form.library ?? ""}
                                         onChange={(e) => setForm((p) => ({ ...p, library: e.target.value || null }))}
-                                        className={`rounded-lg border bg-slate-900 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary/70 ${
+                                        className={`rounded-lg border bg-slate-900 pl-3 pr-10 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary/70 ${
                                             form.library ? "border-slate-700" : "border-amber-500/60"
                                         }`}
                                     >

@@ -1,9 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Edit, Flame, FolderPlus, Hand, Home, Layers, Loader2, Pin, RefreshCcw, Sparkle, Sparkles, Star, Trash2, Users } from "lucide-react";
+import { AlertTriangle, Check, Edit, Flame, FolderPlus, Hand, Home, Layers, Loader2, Pin, RefreshCcw, Sparkle, Sparkles, Star, Shapes, Trash2, Users } from "lucide-react";
 import { fetchWithAuth } from "../../utils/api";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import PinPopover, { type VisibilityOptions } from "./PinPopover";
-import type { CollectionOverview } from "./collectionFilters";
+import type { CollectionOverview, CollectionTypeRef } from "./collectionFilters";
+import { typeColor } from "./typeColors";
+
+const TYPE_SOURCE: Record<CollectionTypeRef["source"], string> = {
+    manual: "set by hand",
+    label: "from label",
+    prefix: "from sort-title prefix",
+    group: "from group",
+};
 
 // Everything a view needs to act on a collection
 export type CollectionActions = {
@@ -14,6 +22,7 @@ export type CollectionActions = {
     unpin: (c: CollectionOverview) => void;
     pinning: string | null; // rating key being pinned/unpinned
     showAttention: boolean; // a housekeeping filter is on, so always show "needs attention" badges
+    filterType: (type: CollectionTypeRef) => void; // clicking a Type badge filters the page by that type
     groups: { name: string; smart: boolean }[]; // this library's groups
     setGroup: (c: CollectionOverview, group: string, member: boolean) => Promise<void>;
 };
@@ -194,9 +203,11 @@ export function CollectionBadges({
     collection: c,
     compact = false,
     attention: attentionMode = "always",
+    onType,
 }: {
     collection: CollectionOverview;
     compact?: boolean;
+    onType?: (type: CollectionTypeRef) => void;
     // "hover": only while the pointer is over the collection (rows and cards)
     attention?: "always" | "hover";
 }) {
@@ -225,6 +236,21 @@ export function CollectionBadges({
 
     return (
         <span className="flex flex-wrap items-center gap-1">
+            {/* Collection type: the most prominent badge, in the type's own colour */}
+            {c.type && (
+                <button
+                    type="button"
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        onType?.(c.type!);
+                    }}
+                    title={`Collection type: ${c.type.name} (${TYPE_SOURCE[c.type.source]}${c.type.matched ? `: ${c.type.matched}` : ""}). Click to show this type`}
+                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-bold ${typeColor(c.type.color)} hover:brightness-125`}
+                >
+                    <Shapes className="h-3 w-3" /> {c.type.name}
+                </button>
+            )}
+
             {/* What it is */}
             {c.smart ? (
                 <SmartBadge collection={c} />
@@ -351,7 +377,7 @@ export function CollectionRow({ collection, actions }: { collection: CollectionO
                     {collection.sort_title !== collection.title && (
                         <p className="text-xs text-slate-500" title="Sort title">{collection.sort_title}</p>
                     )}
-                    <CollectionBadges collection={collection} attention={actions.showAttention ? "always" : "hover"} />
+                    <CollectionBadges collection={collection} attention={actions.showAttention ? "always" : "hover"} onType={actions.filterType} />
                 </div>
                 <Actions collection={collection} actions={actions} />
             </div>
@@ -423,7 +449,7 @@ export function CollectionCardView({ collection, actions }: { collection: Collec
             {collection.sort_title !== collection.title && (
                 <p className="truncate text-[11px] text-slate-500" title={`Sort title: ${collection.sort_title}`}>{collection.sort_title}</p>
             )}
-            <div className="mt-1"><CollectionBadges collection={collection} compact attention={actions.showAttention ? "always" : "hover"} /></div>
+            <div className="mt-1"><CollectionBadges collection={collection} compact attention={actions.showAttention ? "always" : "hover"} onType={actions.filterType} /></div>
         </div>
     );
 }
@@ -449,7 +475,7 @@ export function CollectionListItem({ collection, actions }: { collection: Collec
                         <span className="truncate text-xs text-slate-500" title="Sort title">{collection.sort_title}</span>
                     )}
                 </div>
-                <CollectionBadges collection={collection} compact />
+                <CollectionBadges collection={collection} compact onType={actions.filterType} />
             </div>
             <span className="hidden sm:block shrink-0 text-xs text-slate-400 w-20 text-right">{plural(collection.item_count, "item")}</span>
             <Actions collection={collection} actions={actions} />

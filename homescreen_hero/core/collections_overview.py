@@ -150,6 +150,12 @@ def build_overview(server, config, library: str) -> Dict[str, Any]:
     }
 
 
+def with_types(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from .collection_types import with_types as add_types
+
+    return add_types(payload)
+
+
 def get_overview(server, config, library: str, cache_version: int, refresh: bool = False) -> Dict[str, Any]:
     cached = _cache.get(library)
     if (
@@ -158,10 +164,10 @@ def get_overview(server, config, library: str, cache_version: int, refresh: bool
         and cached[0] == cache_version
         and time.time() - cached[1] < CACHE_TTL_SECONDS
     ):
-        return cached[2]
+        return with_types(cached[2])
     payload = build_overview(server, config, library)
     _cache[library] = (cache_version, time.time(), payload)
-    return payload
+    return with_types(payload)
 
 
 def collection_items(server, rating_key: str, limit: int = 20) -> Dict[str, Any]:

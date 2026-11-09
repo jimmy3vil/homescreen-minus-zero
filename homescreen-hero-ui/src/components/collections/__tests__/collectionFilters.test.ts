@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
     DEFAULT_FILTERS,
     NO_GROUP,
+    NO_TYPE,
     activeFilterChips,
     applyFilters,
     clearAllFilters,
@@ -40,6 +41,7 @@ function coll(over: Partial<CollectionOverview>): CollectionOverview {
         total_plays: null,
         latest_item_added_at: null,
         trending: false,
+        type: null,
         ...over,
     };
 }
@@ -136,5 +138,31 @@ describe("URL round trip and chips", () => {
     it("clear all keeps scope and sort", () => {
         const f: CollectionFilters = { ...DEFAULT_FILTERS, scope: "rotation", q: "x", empty: true, sort: "title", dir: "desc" };
         expect(clearAllFilters(f)).toEqual({ ...DEFAULT_FILTERS, scope: "rotation", sort: "title", dir: "desc" });
+    });
+});
+
+describe("collection types", () => {
+    const director = { id: 1, name: "Director", color: "violet", source: "label" as const, matched: "Director" };
+    const actor = { id: 2, name: "Actor", color: "rose", source: "prefix" as const, matched: "!010" };
+    const typed = [
+        coll({ title: "Nolan", type: director }),
+        coll({ title: "Hanks", type: actor }),
+        coll({ title: "Trending" }),
+    ];
+
+    it("filters by a type, or by having none", () => {
+        const pick = (f: Partial<CollectionFilters>) => applyFilters(typed, { ...DEFAULT_FILTERS, ...f }, null, NOW).map((c) => c.title);
+        expect(pick({ type: { id: "1", name: "Director" } })).toEqual(["Nolan"]);
+        expect(pick({ type: { id: NO_TYPE, name: "No collection type" } })).toEqual(["Trending"]);
+    });
+
+    it("sorts by type name, untyped last", () => {
+        expect(sortCollections(typed, "type", "asc").map((c) => c.title)).toEqual(["Hanks", "Nolan", "Trending"]);
+    });
+
+    it("keeps the type filter in the page address and shows a chip", () => {
+        const f: CollectionFilters = { ...DEFAULT_FILTERS, type: { id: "2", name: "Actor" } };
+        expect(paramsToFilters(filtersToParams(f))).toEqual(f);
+        expect(activeFilterChips(f).map((c) => c.label)).toEqual(["Type: Actor"]);
     });
 });
