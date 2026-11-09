@@ -40,8 +40,18 @@ export type SmartQuery = {
 
 type PreviewItem = { title: string; year: string | null; poster_url: string | null; rating_key: string };
 
+// A smart collection's current filters, as read back from Plex
+export type InitialSmartQuery = {
+    libtype: string;
+    match: "all" | "any";
+    rules: { field: string; operator: string; value: string }[];
+    sort: string | null;
+    limit: number | null;
+};
+
 type Props = {
-    library: string;
+    library: string; // the parent keys this component by library, so a new library starts fresh
+    initial?: InitialSmartQuery;
     onChange: (query: SmartQuery | null) => void; // null while the rules are incomplete
 };
 
@@ -49,6 +59,21 @@ const inputClass =
     "rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary/70";
 
 let nextRuleId = 1;
+
+// Plex stores dates as "-30d" (relative) or a unix timestamp (absolute)
+function ruleFromPlex(r: { field: string; operator: string; value: string }): Rule {
+    const rule: Rule = { id: nextRuleId++, field: r.field, operator: r.operator, value: r.value, dateMode: "relative", relUnit: "d" };
+    const rel = /^-?(\d+)([dwmy])$/.exec(r.value);
+    if (rel) {
+        rule.relAmount = rel[1];
+        rule.relUnit = rel[2] as Rule["relUnit"];
+        rule.value = "";
+    } else if (/^\d{9,}$/.test(r.value)) {
+        rule.dateMode = "absolute";
+        rule.value = new Date(Number(r.value) * 1000).toISOString().slice(0, 10);
+    }
+    return rule;
+}
 
 function ruleValue(rule: Rule, field: SchemaField | undefined): string {
     if (field?.type === "date" && rule.dateMode === "relative") {
@@ -127,15 +152,15 @@ function ChoicePicker({
     );
 }
 
-export default function SmartCollectionBuilder({ library, onChange }: Props) {
+export default function SmartCollectionBuilder({ library, initial, onChange }: Props) {
     const [schema, setSchema] = useState<Schema | null>(null);
     const [schemaError, setSchemaError] = useState<string | null>(null);
-    const [libtype, setLibtype] = useState<string | null>(null);
-    const [match, setMatch] = useState<"all" | "any">("all");
-    const [rules, setRules] = useState<Rule[]>([]);
-    const [sortKey, setSortKey] = useState<string>("");
-    const [sortDesc, setSortDesc] = useState(false);
-    const [limit, setLimit] = useState<string>("");
+    const [libtype, setLibtype] = useState<string | null>(initial?.libtype ?? null);
+    const [match, setMatch] = useState<"all" | "any">(initial?.match ?? "all");
+    const [rules, setRules] = useState<Rule[]>(() => (initial?.rules ?? []).map(ruleFromPlex));
+    const [sortKey, setSortKey] = useState<string>(initial?.sort?.split(":")[0] ?? "");
+    const [sortDesc, setSortDesc] = useState(initial?.sort?.endsWith(":desc") ?? false);
+    const [limit, setLimit] = useState<string>(initial?.limit ? String(initial.limit) : "");
 
     const [preview, setPreview] = useState<{ count: number; items: PreviewItem[] } | null>(null);
     const [previewError, setPreviewError] = useState<string | null>(null);
@@ -164,14 +189,12 @@ export default function SmartCollectionBuilder({ library, onChange }: Props) {
         };
     }, [library, libtype]);
 
-    // Changing library or item type invalidates the rules
-    useEffect(() => {
+    // A different item type has different fields, so its rules start over
+    const changeLibtype = (next: string) => {
+        setLibtype(next);
         setRules([]);
         setSortKey("");
-    }, [library, libtype]);
-    useEffect(() => {
-        setLibtype(null);
-    }, [library]);
+    };
 
     const fieldsByKey = useMemo(
         () => Object.fromEntries((schema?.fields ?? []).map((f) => [f.key, f])),
@@ -263,7 +286,7 @@ export default function SmartCollectionBuilder({ library, onChange }: Props) {
                 {schema.libtypes.length > 1 && (
                     <>
                         <span>Collect</span>
-                        <select value={libtype ?? ""} onChange={(e) => setLibtype(e.target.value)} className={inputClass}>
+                        <select value={libtype ?? ""} onChange={(e) => changeLibtype(e.target.value)} className={inputClass}>
                             {schema.libtypes.map((t) => (
                                 <option key={t.key} value={t.key}>{t.title}</option>
                             ))}

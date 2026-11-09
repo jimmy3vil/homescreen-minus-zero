@@ -4,6 +4,7 @@ import os
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
 
 from homescreen_hero.core.auth import CurrentUser, require_admin
 from homescreen_hero.core.config.loader import (
@@ -197,6 +198,57 @@ def set_group_target_users(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - defensive
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+class GroupMembershipRequest(BaseModel):
+    group: str
+    collection: str
+    member: bool
+
+
+def set_group_membership(groups: list[dict], group_name: str, collection: str, member: bool) -> bool:
+    # Add or remove a collection from a manual group's list. Returns whether
+    # anything changed. Smart groups pick their collections from rules.
+    target = next((g for g in groups if g.get("name") == group_name), None)
+    if target is None:
+        raise LookupError(f"No group called '{group_name}'")
+    if target.get("smart"):
+        raise ValueError(f"'{group_name}' is a smart group: its collections come from its rules")
+    names = list(target.get("collections") or [])
+    if member and collection not in names:
+        names.append(collection)
+    elif not member and collection in names:
+        names.remove(collection)
+    else:
+        return False
+    target["collections"] = names
+    return True
+
+
+@router.post("/groups/membership", response_model=ConfigSaveResponse)
+def update_group_membership(
+    payload: GroupMembershipRequest,
+    current_user: CurrentUser = Depends(require_admin),
+) -> ConfigSaveResponse:
+    # Add a collection to, or remove it from, a manual group.
+    try:
+        data = load_config_mapping()
+        groups = load_group_list(data)
+        changed = set_group_membership(groups, payload.group, payload.collection, payload.member)
+        if changed:
+            save_config_mapping({**data, "groups": groups})
+        verb = "Added" if payload.member else "Removed"
+        prep = "to" if payload.member else "from"
+        return ConfigSaveResponse(
+            ok=True,
+            path=str(get_config_path()),
+            env_override=CONFIG_ENV_VAR in os.environ,
+            message=f"{verb} '{payload.collection}' {prep} group '{payload.group}'" if changed else "No change",
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/groups/reorder", response_model=ConfigSaveResponse)

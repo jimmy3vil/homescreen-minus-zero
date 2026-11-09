@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Edit, Home, Layers, Loader2, Pin, Sparkles, Star, Trash2, Users } from "lucide-react";
+import { Check, Edit, FolderPlus, Home, Layers, Loader2, Pin, Sparkles, Star, Trash2, Users } from "lucide-react";
 import { fetchWithAuth } from "../../utils/api";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import PinPopover, { type VisibilityOptions } from "./PinPopover";
 import type { CollectionOverview } from "./collectionFilters";
 
@@ -12,7 +13,62 @@ export type CollectionActions = {
     pin: (c: CollectionOverview, v: VisibilityOptions) => void;
     unpin: (c: CollectionOverview) => void;
     pinning: string | null; // rating key being pinned/unpinned
+    groups: { name: string; smart: boolean }[]; // this library's groups
+    setGroup: (c: CollectionOverview, group: string, member: boolean) => Promise<void>;
 };
+
+// Add a collection to, or take it out of, this library's manual groups
+function GroupMenu({ collection, actions }: { collection: CollectionOverview; actions: CollectionActions }) {
+    const [busy, setBusy] = useState<string | null>(null);
+    return (
+        <Popover>
+            <PopoverTrigger asChild>
+                <button
+                    type="button"
+                    className="p-2 rounded-lg bg-slate-800/70 text-slate-300 hover:bg-slate-700/90 hover:text-white transition-colors"
+                    title="Add to group"
+                >
+                    <FolderPlus size={16} />
+                </button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-64 p-2 bg-slate-900/95 border-slate-700" onClick={(e) => e.stopPropagation()}>
+                <p className="px-2 pb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-400">Groups in {collection.library}</p>
+                {actions.groups.length === 0 ? (
+                    <p className="px-2 py-1.5 text-xs text-slate-500">This library has no groups yet.</p>
+                ) : (
+                    <div className="max-h-64 overflow-y-auto">
+                        {actions.groups.map((g) => {
+                            const member = collection.groups.includes(g.name);
+                            return (
+                                <button
+                                    key={g.name}
+                                    type="button"
+                                    disabled={g.smart || busy !== null}
+                                    onClick={async () => {
+                                        setBusy(g.name);
+                                        try {
+                                            await actions.setGroup(collection, g.name, !member);
+                                        } finally {
+                                            setBusy(null);
+                                        }
+                                    }}
+                                    title={g.smart ? "Smart group: its collections come from its rules" : undefined}
+                                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:text-slate-500 disabled:hover:bg-transparent"
+                                >
+                                    <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${member ? "border-primary bg-primary" : "border-slate-600"}`}>
+                                        {busy === g.name ? <Loader2 className="h-3 w-3 animate-spin text-white" /> : member && <Check className="h-3 w-3 text-white" />}
+                                    </span>
+                                    <span className="flex-1 truncate">{g.name}</span>
+                                    {g.smart && <span className="text-[10px] uppercase tracking-wide">smart</span>}
+                                </button>
+                            );
+                        })}
+                    </div>
+                )}
+            </PopoverContent>
+        </Popover>
+    );
+}
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -165,6 +221,7 @@ function Actions({ collection, actions }: { collection: CollectionOverview; acti
                 onPinWithVisibility={(v) => actions.pin(collection, v)}
                 onUnpin={() => actions.unpin(collection)}
             />
+            <GroupMenu collection={collection} actions={actions} />
             <button type="button" className={btn} title="Edit collection" onClick={() => actions.edit(collection)}>
                 <Edit size={16} />
             </button>

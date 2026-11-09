@@ -8,7 +8,6 @@ import {
     Check,
     ChevronDown,
     Filter,
-    Image,
     LayoutGrid,
     List,
     Plus,
@@ -30,6 +29,7 @@ import {
     DialogFooter,
 } from "../components/ui/dialog";
 import CollectionFilterPanel from "../components/collections/CollectionFilterPanel";
+import EditCollectionPanel from "../components/collections/EditCollectionPanel";
 import {
     CollectionCardView,
     CollectionListItem,
@@ -155,16 +155,9 @@ export default function CollectionsPage() {
     const [selectedMovies, setSelectedMovies] = useState<Set<string>>(new Set());
     const [searchLoading, setSearchLoading] = useState(false);
 
-    // Quick edit modal
-    const [showQuickEditModal, setShowQuickEditModal] = useState(false);
-    const [editingCollection, setEditingCollection] = useState<Collection | null>(null);
-    const [quickEditTitle, setQuickEditTitle] = useState("");
-    const [quickEditSummary, setQuickEditSummary] = useState("");
-    const [quickEditPosterFile, setQuickEditPosterFile] = useState<File | null>(null);
-    const [quickEditPosterUrl, setQuickEditPosterUrl] = useState("");
-    const [quickEditCurrentPosterUrl, setQuickEditCurrentPosterUrl] = useState<string | null>(null);
-    const [quickEditPosterMode, setQuickEditPosterMode] = useState<"upload" | "url">("upload");
-    const [quickEditing, setQuickEditing] = useState(false);
+    // Edit panel and this library's groups
+    const [editingKey, setEditingKey] = useState<string | null>(null);
+    const [libraryGroups, setLibraryGroups] = useState<{ name: string; smart: boolean }[]>([]);
 
     // Load libraries once; pick a library if none is chosen or it's no longer enabled
     useEffect(() => {
@@ -306,12 +299,46 @@ export default function CollectionsPage() {
 
     const actions: CollectionActions = {
         open: (c) => navigate(`/collections/${encodeURIComponent(c.library)}/${encodeURIComponent(c.title)}`),
-        edit: (c) => openQuickEditModal(c),
+        edit: (c) => setEditingKey(c.rating_key),
         remove: (c) => setPendingDelete({ library: c.library, title: c.title }),
         pin: (c, v) => togglePin(c, v),
         unpin: (c) => togglePin(c),
         pinning: pinningKey,
+        groups: libraryGroups,
+        setGroup: async (c, group, member) => {
+            try {
+                const r = await fetchWithAuth("/api/admin/config/groups/membership", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ group, collection: c.title, member }),
+                });
+                const data = await r.json().catch(() => null);
+                if (!r.ok) throw new Error(data?.detail ?? "Couldn't change the group");
+                updateCollection(c.rating_key, {
+                    groups: member ? [...c.groups, group].sort() : c.groups.filter((g) => g !== group),
+                });
+                setToast({ message: member ? `Added "${c.title}" to group "${group}"` : `Removed "${c.title}" from group "${group}"`, type: "success" });
+            } catch (e) {
+                setToast({ message: e instanceof Error ? e.message : "Couldn't change the group", type: "error" });
+            }
+        },
     };
+
+    // Groups that belong to this library, for "Add to group"
+    useEffect(() => {
+        if (!library) return;
+        fetchWithAuth("/api/admin/config/groups")
+            .then((r) => r.json())
+            .then((groups: { name: string; library?: string | null; smart?: boolean }[]) =>
+                setLibraryGroups(
+                    groups
+                        .filter((g) => g.library === library)
+                        .map((g) => ({ name: g.name, smart: !!g.smart }))
+                        .sort((a, b) => a.name.localeCompare(b.name))
+                )
+            )
+            .catch(() => setLibraryGroups([]));
+    }, [library]);
 
     // New collections go into the library being worked on
     const openCreateModal = () => {
@@ -539,100 +566,6 @@ export default function CollectionsPage() {
         }
     };
 
-    const openQuickEditModal = async (collection: Collection) => {
-
-        setEditingCollection(collection);
-        setQuickEditTitle(collection.title);
-        setQuickEditSummary("");
-        setQuickEditPosterFile(null);
-        setQuickEditPosterUrl("");
-        setQuickEditCurrentPosterUrl(collection.poster_url);
-
-        // Fetch full collection details to get summary
-        try {
-            const response = await fetchWithAuth(
-                `/api/collections/${encodeURIComponent(collection.library)}/${encodeURIComponent(collection.title)}/details`
-            );
-            const data = await response.json();
-            setQuickEditSummary(data.summary || "");
-        } catch (err) {
-            console.error("Failed to load collection details:", err);
-        }
-
-        setShowQuickEditModal(true);
-    };
-
-    const closeQuickEditModal = () => {
-        setShowQuickEditModal(false);
-        setEditingCollection(null);
-        setQuickEditTitle("");
-        setQuickEditSummary("");
-        setQuickEditPosterFile(null);
-        setQuickEditPosterUrl("");
-        setQuickEditCurrentPosterUrl(null);
-        setQuickEditPosterMode("upload");
-    };
-
-    const handleQuickEditSubmit = async () => {
-        if (!editingCollection) return;
-
-        try {
-            setQuickEditing(true);
-
-            // Update title and summary if changed
-            if (quickEditTitle.trim() !== editingCollection.title || quickEditSummary.trim() !== "") {
-                await fetchWithAuth(
-                    `/api/collections/${encodeURIComponent(editingCollection.library)}/${encodeURIComponent(editingCollection.title)}`,
-                    {
-                        method: "PUT",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                            title: quickEditTitle.trim(),
-                            summary: quickEditSummary.trim() || null,
-                        }),
-                    }
-                );
-            }
-
-            // Upload poster if provided
-            if (quickEditPosterFile || quickEditPosterUrl) {
-                const formData = new FormData();
-                if (quickEditPosterFile) {
-                    formData.append("file", quickEditPosterFile);
-                } else if (quickEditPosterUrl) {
-                    formData.append("url", quickEditPosterUrl);
-                }
-
-                const titleForPosterUpload = quickEditTitle.trim() || editingCollection.title;
-                await fetchWithAuth(
-                    `/api/collections/${encodeURIComponent(editingCollection.library)}/${encodeURIComponent(titleForPosterUpload)}/upload-poster`,
-                    {
-                        method: "POST",
-                        body: formData,
-                    }
-                );
-            }
-
-            setToast({ message: "Collection updated successfully", type: "success" });
-            closeQuickEditModal();
-            await loadCollections(true);
-        } catch (err) {
-            setToast({
-                message: err instanceof Error ? err.message : "Failed to update collection",
-                type: "error"
-            });
-        } finally {
-            setQuickEditing(false);
-        }
-    };
-
-    const handleQuickEditFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (file) {
-            setQuickEditPosterFile(file);
-            setQuickEditPosterUrl("");
-        }
-    };
 
     // ---------------------------------------------------------------- render
     const control = "flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/70 transition-colors";
@@ -901,6 +834,17 @@ export default function CollectionsPage() {
 
             {body()}
 
+            <EditCollectionPanel
+                library={library}
+                ratingKey={editingKey}
+                knownLabels={overview?.labels ?? []}
+                onClose={() => setEditingKey(null)}
+                onSaved={(message) => {
+                    setToast({ message, type: "success" });
+                    loadOverview(true);
+                }}
+            />
+
             {overview && (
                 <CollectionFilterPanel
                     open={filterPanelOpen}
@@ -914,173 +858,6 @@ export default function CollectionsPage() {
                     totalCount={all.length}
                 />
             )}
-
-            {/* Quick Edit Modal */}
-            <Dialog open={showQuickEditModal && editingCollection !== null} onOpenChange={(isOpen) => !isOpen && closeQuickEditModal()}>
-                <DialogContent className="max-w-3xl">
-                    <DialogHeader>
-                        <div className="flex flex-col gap-1">
-                            <DialogTitle>Edit Collection Details</DialogTitle>
-                            <DialogDescription>
-                                Update the title, summary, or poster for this collection
-                            </DialogDescription>
-                        </div>
-                        <DialogCloseButton />
-                    </DialogHeader>
-
-                    {/* Modal Content */}
-                    <div className="p-6">
-                        <div className="grid grid-cols-[200px_1fr] gap-6">
-                            {/* Left Column - Poster Preview */}
-                            <div>
-                                <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-3">
-                                    Cover Poster
-                                </label>
-
-                                {/* Poster Preview */}
-                                <div className="relative aspect-[2/3] bg-slate-800 rounded-xl overflow-hidden border-2 border-dashed border-slate-700">
-                                    {quickEditCurrentPosterUrl ? (
-                                        <img
-                                            src={quickEditCurrentPosterUrl}
-                                            alt="Current poster"
-                                            className="w-full h-full object-cover"
-                                        />
-                                    ) : (
-                                        <div className="w-full h-full flex items-center justify-center text-slate-600">
-                                            No Poster
-                                        </div>
-                                    )}
-                                </div>
-
-                                <p className="text-xs text-slate-500 mt-2">
-                                    Recommended: 600×900px (JPG/PNG)
-                                </p>
-                            </div>
-
-                            {/* Right Column - Text Fields & Poster Upload */}
-                            <div className="space-y-4">
-                                {/* Title */}
-                                <div>
-                                    <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">
-                                        Collection Name
-                                    </label>
-                                    <input
-                                        type="text"
-                                        value={quickEditTitle}
-                                        onChange={(e) => setQuickEditTitle(e.target.value)}
-                                        className="w-full px-4 py-2.5 bg-slate-800/60 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary/70"
-                                        autoFocus
-                                    />
-                                </div>
-
-                                {/* Summary */}
-                                <div>
-                                    <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">
-                                        Brief Summary
-                                    </label>
-                                    <textarea
-                                        value={quickEditSummary}
-                                        onChange={(e) => setQuickEditSummary(e.target.value)}
-                                        rows={4}
-                                        className="w-full px-4 py-2.5 bg-slate-800/60 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary/70 resize-none"
-                                        placeholder="Enter a brief description of this collection..."
-                                    />
-                                </div>
-
-                                {/* Poster Upload Options */}
-                                <div>
-                                    <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">
-                                        Update Poster
-                                    </label>
-
-                                    {/* Tab Switcher */}
-                                    <div className="flex gap-2 mb-3">
-                                        <button
-                                            type="button"
-                                            onClick={() => {
-                                                setQuickEditPosterMode("upload");
-                                                setQuickEditPosterUrl("");
-                                            }}
-                                            className={`flex-1 px-3 py-2 text-xs font-medium rounded-lg transition-colors ${
-                                                quickEditPosterMode === "upload"
-                                                    ? "bg-primary text-white"
-                                                    : "bg-slate-800/60 text-slate-400 hover:bg-slate-700"
-                                            }`}
-                                        >
-                                            Upload File
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => {
-                                                setQuickEditPosterMode("url");
-                                                setQuickEditPosterFile(null);
-                                            }}
-                                            className={`flex-1 px-3 py-2 text-xs font-medium rounded-lg transition-colors ${
-                                                quickEditPosterMode === "url"
-                                                    ? "bg-primary text-white"
-                                                    : "bg-slate-800/60 text-slate-400 hover:bg-slate-700"
-                                            }`}
-                                        >
-                                            From URL
-                                        </button>
-                                    </div>
-
-                                    {/* Upload Mode */}
-                                    {quickEditPosterMode === "upload" && (
-                                        <label className="block cursor-pointer">
-                                            <div className="border-2 border-dashed border-slate-700 rounded-xl p-4 text-center hover:border-slate-600 transition-colors">
-                                                <Image size={20} className="mx-auto mb-2 text-slate-400" />
-                                                <span className="text-xs text-slate-400">
-                                                    {quickEditPosterFile ? quickEditPosterFile.name : "Click to select file"}
-                                                </span>
-                                            </div>
-                                            <input
-                                                type="file"
-                                                accept="image/*"
-                                                onChange={handleQuickEditFileSelect}
-                                                className="hidden"
-                                            />
-                                        </label>
-                                    )}
-
-                                    {/* URL Mode */}
-                                    {quickEditPosterMode === "url" && (
-                                        <div>
-                                            <input
-                                                type="url"
-                                                value={quickEditPosterUrl}
-                                                onChange={(e) => setQuickEditPosterUrl(e.target.value)}
-                                                placeholder="https://example.com/poster.jpg"
-                                                className="w-full px-3 py-2 bg-slate-800/60 border border-slate-700 rounded-lg text-white text-xs placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary/70"
-                                            />
-                                            <p className="text-xs text-slate-500 mt-2">
-                                                e.g., from ThePosterDB.com
-                                            </p>
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <DialogFooter className="justify-end gap-3 bg-slate-950/50">
-                        <button
-                            onClick={closeQuickEditModal}
-                            disabled={quickEditing}
-                            className="px-4 py-2 rounded-lg border border-slate-700 bg-slate-800/60 text-slate-300 text-sm font-medium hover:bg-slate-700 hover:border-slate-600 transition-all duration-200 active:scale-95 disabled:opacity-50"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            onClick={handleQuickEditSubmit}
-                            disabled={quickEditing || !quickEditTitle.trim()}
-                            className="px-4 py-2 rounded-lg bg-primary hover:bg-primary-hover text-white text-sm font-bold shadow-lg shadow-primary/30 hover:shadow-primary/40 transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                            {quickEditing ? "Saving..." : "Save Changes"}
-                        </button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
 
             {/* Create Collection Modal */}
             <Dialog
@@ -1211,7 +988,7 @@ export default function CollectionsPage() {
                                     Filters
                                 </label>
                                 {newCollectionLibrary ? (
-                                    <SmartCollectionBuilder library={newCollectionLibrary} onChange={setSmartQuery} />
+                                    <SmartCollectionBuilder key={newCollectionLibrary} library={newCollectionLibrary} onChange={setSmartQuery} />
                                 ) : (
                                     <p className="text-sm text-slate-500">Choose a library first.</p>
                                 )}

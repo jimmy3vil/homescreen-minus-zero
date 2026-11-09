@@ -1485,3 +1485,173 @@ def get_smart_collection_summary(
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+
+
+# ---------------------------------------------------------------- edit collection panel
+
+class CollectionDetailsIn(BaseModel):
+    title: str
+    sort_title: str = ""
+    summary: str = ""
+    labels: List[str] = []
+
+
+class CollectionAdvancedIn(BaseModel):
+    collection_mode: Optional[str] = None
+    collection_sort: Optional[str] = None
+    filter_user: Optional[str] = None
+
+
+def _editable_collection(library: str, rating_key: str):
+    from homescreen_hero.core.collection_editing import get_collection
+
+    server, section = _enabled_section(library)
+    try:
+        return server, section, get_collection(server, section, rating_key)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=404, detail="Collection not found in Plex")
+
+
+def _after_edit(library: str) -> None:
+    # The Collections page and rotation both read collection names and posters
+    invalidate_collections_cache()
+    invalidate_poster_caches()
+
+
+@router.get("/library/{library}/collection/{rating_key}/edit")
+def get_collection_for_editing(
+    library: str,
+    rating_key: str,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.collection_editing import edit_details
+
+    server, _, collection = _editable_collection(library, rating_key)
+    try:
+        return edit_details(server, collection)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+
+
+@router.put("/library/{library}/collection/{rating_key}/details")
+def save_collection_details(
+    library: str,
+    rating_key: str,
+    payload: CollectionDetailsIn,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.collection_editing import save_details
+
+    _, section, collection = _editable_collection(library, rating_key)
+    new_title = payload.title.strip()
+    if new_title != collection.title and any(c.title == new_title for c in section.collections()):
+        raise HTTPException(status_code=409, detail=f"A collection called '{new_title}' already exists in {library}")
+    try:
+        result = save_details(collection, library, payload.title, payload.sort_title, payload.summary, payload.labels)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+    _after_edit(library)
+    return {"success": True, **result}
+
+
+@router.put("/library/{library}/collection/{rating_key}/advanced")
+def save_collection_advanced(
+    library: str,
+    rating_key: str,
+    payload: CollectionAdvancedIn,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.collection_editing import save_advanced
+
+    _, _, collection = _editable_collection(library, rating_key)
+    try:
+        save_advanced(collection, payload.collection_mode, payload.collection_sort, payload.filter_user)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+    _after_edit(library)
+    return {"success": True}
+
+
+@router.put("/library/{library}/collection/{rating_key}/smart")
+def save_collection_smart_filters(
+    library: str,
+    rating_key: str,
+    payload: SmartQueryIn,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.collection_editing import save_smart_filters
+
+    server, section, collection = _editable_collection(library, rating_key)
+    try:
+        save_smart_filters(server, section, collection, _smart_query(section, payload))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+    _after_edit(library)
+    return {"success": True}
+
+
+@router.get("/library/{library}/collection/{rating_key}/artwork/{kind}")
+def list_collection_artwork(
+    library: str,
+    rating_key: str,
+    kind: str,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.collection_editing import artwork_options
+
+    server, _, collection = _editable_collection(library, rating_key)
+    try:
+        return {"options": artwork_options(server, collection, kind)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+
+
+@router.post("/library/{library}/collection/{rating_key}/artwork/{kind}")
+async def set_collection_artwork(
+    library: str,
+    rating_key: str,
+    kind: str,
+    file: Optional[UploadFile] = File(None),
+    url: Optional[str] = Form(None),
+    select: Optional[str] = Form(None),
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    # Set poster, background, logo or square art: upload a file, give a link,
+    # or pick one of the images Plex already has.
+    import os
+    import tempfile
+
+    from homescreen_hero.core.collection_editing import select_artwork, upload_artwork
+
+    _, _, collection = _editable_collection(library, rating_key)
+    tmp_path = None
+    try:
+        if select:
+            select_artwork(collection, kind, select)
+        elif file is not None:
+            suffix = os.path.splitext(file.filename or "")[1] or ".jpg"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(await file.read())
+                tmp_path = tmp.name
+            upload_artwork(collection, kind, filepath=tmp_path)
+        else:
+            upload_artwork(collection, kind, url=(url or "").strip() or None)
+    except (ValueError, LookupError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+    finally:
+        if tmp_path:
+            os.unlink(tmp_path)
+    _after_edit(library)
+    return {"success": True}

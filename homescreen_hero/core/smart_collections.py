@@ -209,7 +209,7 @@ def parse_smart_content(content: str) -> Dict[str, Any]:
     from urllib.parse import unquote
 
     query = content.split("?", 1)[1] if "?" in content else ""
-    result: Dict[str, Any] = {"type": None, "match": "all", "rules": [], "sort": None, "limit": None}
+    result: Dict[str, Any] = {"type": None, "match": "all", "rules": [], "sort": None, "limit": None, "nested": False}
     depth = 0
     for part in query.split("&"):
         if not part:
@@ -227,6 +227,9 @@ def parse_smart_content(content: str) -> Dict[str, Any]:
             result["limit"] = int(value) if value.isdigit() else None
         elif key == "push":
             depth += 1
+            # Plex's editor allows groups within groups; we only show one level
+            if depth > 1:
+                result["nested"] = True
         elif key == "pop":
             depth = max(0, depth - 1)
         elif key == "or":
