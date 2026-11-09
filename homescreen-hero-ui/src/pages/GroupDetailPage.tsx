@@ -45,6 +45,7 @@ type DateRange = {
 type CollectionGroup = {
     name: string;
     enabled: boolean;
+    library?: string | null;
     min_picks: number;
     max_picks: number;
     weight: number;
@@ -202,6 +203,8 @@ export default function GroupDetailPage() {
     const [message, setMessage] = useState<string | null>(null);
     const [messageVisible, setMessageVisible] = useState(false);
     const [sources, setSources] = useState<CollectionSource[]>([]);
+    const [sourcesLoaded, setSourcesLoaded] = useState(false);
+    const [plexLibraries, setPlexLibraries] = useState<{ name: string; enabled: boolean }[]>([]);
     const [searchQuery, setSearchQuery] = useState("");
     const [sourceFilter, setSourceFilter] = useState<"all" | "plex" | "trakt" | "letterboxd" | "mdblist" | "tmdb" | "anilist" | "mal">("all");
 
@@ -290,12 +293,22 @@ export default function GroupDetailPage() {
                 // Non-fatal for UI; users can still type manual names
             })
             .finally(() => {
+                setSourcesLoaded(true);
                 clearTimeout(sourcesSkeletonTimer.current);
                 setShowSourcesSkeleton(false);
                 // Clear initial load flag after stagger animations complete (~600ms)
                 setTimeout(() => setInitialLoad(false), 600);
             });
         return () => clearTimeout(sourcesSkeletonTimer.current);
+    }, []);
+
+    useEffect(() => {
+        fetchWithAuth("/api/admin/config/plex")
+            .then((r) => r.json())
+            .then((data) => setPlexLibraries(data.libraries ?? []))
+            .catch(() => {
+                // Library picker just stays empty
+            });
     }, []);
 
     // Auto-dismiss toast
@@ -438,6 +451,11 @@ export default function GroupDetailPage() {
     const availableSources = useMemo(() => {
         let filtered = sources.filter((s) => !form.collections.includes(s.name));
 
+        // Only collections from this group's library can be added
+        if (form.library) {
+            filtered = filtered.filter((s) => s.detail === form.library);
+        }
+
         // Apply source filter
         if (sourceFilter !== "all") {
             filtered = filtered.filter((s) => s.source === sourceFilter);
@@ -453,7 +471,14 @@ export default function GroupDetailPage() {
         }
 
         return filtered;
-    }, [sources, form.collections, sourceFilter, searchQuery]);
+    }, [sources, form.collections, form.library, sourceFilter, searchQuery]);
+
+    // Collections in this group that don't exist in its library; rotation skips them.
+    const outsideLibrary = useMemo(() => {
+        if (!form.library || !sourcesLoaded) return [];
+        const inLibrary = new Set(sources.filter((s) => s.detail === form.library).map((s) => s.name));
+        return form.collections.filter((name) => !inLibrary.has(name));
+    }, [form.library, form.collections, sources, sourcesLoaded]);
 
     const paginatedSources = useMemo(() => {
         const startIndex = (currentPage - 1) * itemsPerPage;
@@ -660,6 +685,33 @@ export default function GroupDetailPage() {
                                         </button>
                                     );
                                 })()}
+                                <label className="inline-flex items-center gap-2 text-sm text-slate-400">
+                                    <span className="sr-only sm:not-sr-only">Library</span>
+                                    <select
+                                        value={form.library ?? ""}
+                                        onChange={(e) => setForm((p) => ({ ...p, library: e.target.value || null }))}
+                                        className={`rounded-lg border bg-slate-900 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary/70 ${
+                                            form.library ? "border-slate-700" : "border-amber-500/60"
+                                        }`}
+                                    >
+                                        <option value="" disabled>Choose a library…</option>
+                                        {[
+                                            ...plexLibraries,
+                                            // Keep a library the group already uses even if it's not configured any more
+                                            ...(form.library && !plexLibraries.some((l) => l.name === form.library)
+                                                ? [{ name: form.library, enabled: false }]
+                                                : []),
+                                        ].map((lib) => (
+                                            <option
+                                                key={lib.name}
+                                                value={lib.name}
+                                                disabled={!lib.enabled && lib.name !== form.library}
+                                            >
+                                                {lib.name}{lib.enabled ? "" : " (not enabled)"}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
                             </div>
                         )}
                     </div>
@@ -949,6 +1001,14 @@ export default function GroupDetailPage() {
                                 </button>
                             )}
                         </div>
+
+                        {outsideLibrary.length > 0 && (
+                            <div className="mx-4 mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                                {outsideLibrary.length} collection{outsideLibrary.length !== 1 ? "s aren't" : " isn't"} in {form.library} and
+                                {outsideLibrary.length !== 1 ? " will" : " will"} be skipped during rotation: {outsideLibrary.slice(0, 5).join(", ")}
+                                {outsideLibrary.length > 5 ? `, and ${outsideLibrary.length - 5} more` : ""}.
+                            </div>
+                        )}
 
                         {/* Selected list */}
                         <div className="max-h-[480px] overflow-y-auto scrollbar-thin">

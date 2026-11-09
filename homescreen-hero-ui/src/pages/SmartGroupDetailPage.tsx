@@ -48,6 +48,7 @@ type SmartGroupRule = {
 type SmartGroupForm = {
     name: string;
     enabled: boolean;
+    library?: string | null;
     smart: true;
     rules: SmartGroupRule[];
     min_picks: number;
@@ -183,11 +184,17 @@ export default function SmartGroupDetailPage() {
 
     // ─── Data fetching ──────────────────────────────────────────
 
+    const [plexLibraries, setPlexLibraries] = useState<{ name: string; enabled: boolean }[]>([]);
+
     useEffect(() => {
         fetchWithAuth("/api/admin/config/groups/smart-filter-options")
             .then((r) => r.json())
             .then(setFilterOptions)
             .catch(() => {}); // Non-critical
+        fetchWithAuth("/api/admin/config/plex")
+            .then((r) => r.json())
+            .then((data) => setPlexLibraries(data.libraries ?? []))
+            .catch(() => {}); // Library picker just stays empty
     }, []);
 
     useEffect(() => {
@@ -217,7 +224,7 @@ export default function SmartGroupDetailPage() {
                 const r = await fetchWithAuth("/api/admin/config/groups/preview-smart", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ rules: form.rules }),
+                    body: JSON.stringify({ rules: form.rules, library: form.library ?? null }),
                 });
                 if (r.ok) {
                     const data = await r.json();
@@ -235,7 +242,7 @@ export default function SmartGroupDetailPage() {
         return () => {
             if (previewDebounceRef.current) clearTimeout(previewDebounceRef.current);
         };
-    }, [form.rules]);
+    }, [form.rules, form.library]);
 
     // ─── Auto-save ──────────────────────────────────────────────
 
@@ -488,6 +495,32 @@ export default function SmartGroupDetailPage() {
                                         </button>
                                     );
                                 })()}
+                                <label className="inline-flex items-center gap-2 text-sm text-slate-400">
+                                    <span className="sr-only sm:not-sr-only">Library</span>
+                                    <select
+                                        value={form.library ?? ""}
+                                        onChange={(e) => setForm((p) => ({ ...p, library: e.target.value || null }))}
+                                        className={`rounded-lg border bg-slate-900 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary/70 ${
+                                            form.library ? "border-slate-700" : "border-amber-500/60"
+                                        }`}
+                                    >
+                                        <option value="" disabled>Choose a library…</option>
+                                        {[
+                                            ...plexLibraries,
+                                            ...(form.library && !plexLibraries.some((l) => l.name === form.library)
+                                                ? [{ name: form.library, enabled: false }]
+                                                : []),
+                                        ].map((lib) => (
+                                            <option
+                                                key={lib.name}
+                                                value={lib.name}
+                                                disabled={!lib.enabled && lib.name !== form.library}
+                                            >
+                                                {lib.name}{lib.enabled ? "" : " (not enabled)"}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
                             </>
                         )}
                     </div>

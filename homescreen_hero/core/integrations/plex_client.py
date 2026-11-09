@@ -80,7 +80,7 @@ def get_configured_collection_names(
 
     # Add collections from groups (use resolved smart group collections when available)
     for group in config.groups:
-        if group.smart and smart_group_collections and group.name in smart_group_collections:
+        if smart_group_collections and group.name in smart_group_collections:
             names.update(smart_group_collections[group.name])
         else:
             for name in group.collections:
@@ -297,13 +297,13 @@ def apply_home_screen_selection(
     # (auto-rotate can select collections that aren't in groups or history yet)
     all_names_to_process = configured_names | previously_rotated_names | selected_set
 
-    # Fetch collections from all enabled libraries
-    all_collections: Dict[str, object] = {}
+    # Fetch collections from all enabled libraries. Keyed by library, because
+    # the same collection name can exist in more than one.
+    collections_by_library: Dict[str, Dict[str, object]] = {}
     for library_name in enabled_libraries:
         logger.info("Fetching collections from library: %s", library_name)
         try:
-            library_collections = get_library_collections(server, library_name)
-            all_collections.update(library_collections)
+            collections_by_library[library_name] = get_library_collections(server, library_name)
         except Exception as e:
             logger.error("Failed to fetch collections from library '%s': %s", library_name, e)
             continue
@@ -325,6 +325,23 @@ def apply_home_screen_selection(
     pinned_order = {p.collection_name: p.display_order for p in pinned_collections}
     pinned_names = set(pinned_order.keys())
 
+    # Which library a selected collection should be shown from: its group's
+    # library, or the library it was pinned in. First match wins.
+    home_library: Dict[str, str] = {}
+    for p in pinned_collections:
+        if getattr(p, "library_name", None):
+            home_library.setdefault(p.collection_name, p.library_name)
+    for group in config.groups:
+        if not group.library:
+            continue
+        pool = (
+            smart_group_collections[group.name]
+            if smart_group_collections and group.name in smart_group_collections
+            else group.collections
+        )
+        for coll_name in pool:
+            home_library.setdefault(coll_name, group.library)
+
     # Sort: pinned first (by pin order), then non-pinned (alphabetically)
     def sort_key(name: str) -> tuple:
         if name in pinned_names:
@@ -343,9 +360,29 @@ def apply_home_screen_selection(
         except Exception as e:
             logger.warning("Could not list managed hubs for '%s': %s", library_name, e)
 
+    def _remove_if_listed(coll: Any, name: str) -> None:
+        # Take a collection out of Manage Recommendations rather than leaving a
+        # hidden entry behind. Collections that aren't listed there are left
+        # untouched: setting visibility on them (even to all-off) would create a
+        # new hidden entry.
+        if _collection_hub_identifier(coll) not in promoted_identifiers:
+            logger.debug("Not in Manage Recommendations, leaving alone: %s", name)
+            return
+        if name in previously_rotated_names and name not in configured_names:
+            logger.info("Removing previously managed collection (removed from config): %s", name)
+        else:
+            logger.debug("Removing from Manage Recommendations: %s", name)
+        if not dry_run:
+            remove_or_hide_hub(coll.visibility(), name)
+
     for name in sorted(all_names_to_process, key=sort_key):
-        coll = all_collections.get(name)
-        if coll is None:
+        # Every enabled library that has a collection with this name.
+        candidates = [
+            (library_name, colls[name])
+            for library_name, colls in collections_by_library.items()
+            if name in colls
+        ]
+        if not candidates:
             # Collection not found in Plex - might have been deleted from Plex library
             if name in configured_names:
                 logger.warning(
@@ -355,53 +392,48 @@ def apply_home_screen_selection(
             continue
 
         if name not in selected_set:
-            # Not on screen this rotation. Take it out of Manage Recommendations
-            # rather than leaving a hidden entry behind. Collections that aren't
-            # listed there are left untouched: setting visibility on them (even
-            # to all-off) would create a new hidden entry.
-            identifier = _collection_hub_identifier(coll)
-            if identifier not in promoted_identifiers:
-                logger.debug("Not in Manage Recommendations, leaving alone: %s", name)
-                continue
-            if name in previously_rotated_names and name not in configured_names:
-                logger.info("Removing previously managed collection (removed from config): %s", name)
-            else:
-                logger.debug("Removing from Manage Recommendations: %s", name)
-            if not dry_run:
-                remove_or_hide_hub(coll.visibility(), name)
+            for _, coll in candidates:
+                _remove_if_listed(coll, name)
             continue
+
+        # Show it from its group's (or pin's) library; any same-named collection
+        # in another library is treated as not selected.
+        target_library = home_library.get(name)
+        coll = next((c for lib, c in candidates if lib == target_library), candidates[0][1])
+        for _, other in candidates:
+            if other is not coll:
+                _remove_if_listed(other, name)
 
         hub = coll.visibility()
 
-        if name in selected_set:
-            # Get visibility settings for this collection
-            visibility = collection_visibility.get(name, {
-                "home": True,
-                "shared": False,
-                "recommended": False
-            })
+        # Get visibility settings for this collection
+        visibility = collection_visibility.get(name, {
+            "home": True,
+            "shared": False,
+            "recommended": False
+        })
 
-            logger.info(
-                "Enabling visibility for collection '%s': home=%s, shared=%s, recommended=%s",
-                name,
-                visibility.get("home", True),
-                visibility.get("shared", False),
-                visibility.get("recommended", False)
+        logger.info(
+            "Enabling visibility for collection '%s': home=%s, shared=%s, recommended=%s",
+            name,
+            visibility.get("home", True),
+            visibility.get("shared", False),
+            visibility.get("recommended", False)
+        )
+        applied.append(name)
+        if not dry_run:
+            hub.updateVisibility(
+                home=visibility.get("home", True),
+                shared=visibility.get("shared", False),
+                recommended=visibility.get("recommended", False)
             )
-            applied.append(name)
-            if not dry_run:
-                hub.updateVisibility(
-                    home=visibility.get("home", True),
-                    shared=visibility.get("shared", False),
-                    recommended=visibility.get("recommended", False)
-                )
-                # Apply collection sort if configured for this collection's group
-                if collection_sort and name in collection_sort:
-                    try:
-                        coll.sortUpdate(sort=collection_sort[name])
-                        logger.debug("Set sort order for '%s' to '%s'", name, collection_sort[name])
-                    except Exception:
-                        logger.warning("Failed to update sort for '%s' (may be a smart collection)", name)
+            # Apply collection sort if configured for this collection's group
+            if collection_sort and name in collection_sort:
+                try:
+                    coll.sortUpdate(sort=collection_sort[name])
+                    logger.debug("Set sort order for '%s' to '%s'", name, collection_sort[name])
+                except Exception:
+                    logger.warning("Failed to update sort for '%s' (may be a smart collection)", name)
 
     logger.info(
         "Home screen selection applied; %d collections enabled, %d collections processed",

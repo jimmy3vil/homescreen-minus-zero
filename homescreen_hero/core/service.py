@@ -51,19 +51,44 @@ def _build_collection_library_map(server, config: AppConfig) -> Dict[str, str]:
 
 
 def _resolve_smart_groups(server, config: AppConfig) -> Dict[str, List[str]]:
-    # Resolve all smart groups into concrete collection name lists.
-    # Returns a dict mapping group name -> resolved collection names.
-    smart_groups = [g for g in config.groups if g.smart]
-    if not smart_groups:
-        return {}
+    # Resolve each group's pool of collection names within its own library:
+    # smart groups by evaluating their rules against that library's collections,
+    # manual groups by dropping names that aren't in that library. A group whose
+    # library isn't enabled gets an empty pool. Groups with no library set
+    # (not yet migrated) keep the old behaviour: smart rules across all
+    # libraries, manual lists as-is.
+    from .group_libraries import collection_names_by_library
 
-    logger.info("Resolving %d smart group(s)", len(smart_groups))
-    metadata = build_collection_metadata(server, config)
-    result = {}
-    for group in smart_groups:
-        resolved = resolve_smart_rules(group.rules, metadata)
-        result[group.name] = resolved
-        logger.info("Smart group '%s' resolved to %d collections", group.name, len(resolved))
+    enabled = {lib.name for lib in config.plex.libraries if lib.enabled}
+    result: Dict[str, List[str]] = {}
+
+    manual_libraries = {g.library for g in config.groups if g.library and not g.smart}
+    names_by_library = (
+        collection_names_by_library(server, manual_libraries) if manual_libraries else {}
+    )
+    metadata = (
+        build_collection_metadata(server, config)
+        if any(g.smart for g in config.groups)
+        else []
+    )
+
+    for group in config.groups:
+        if group.library and group.library not in enabled:
+            result[group.name] = []
+            logger.info("Group '%s' skipped: library '%s' isn't enabled", group.name, group.library)
+        elif group.smart:
+            scoped = [m for m in metadata if not group.library or m.library == group.library]
+            result[group.name] = resolve_smart_rules(group.rules, scoped)
+            logger.info("Smart group '%s' resolved to %d collections", group.name, len(result[group.name]))
+        elif group.library:
+            in_library = names_by_library.get(group.library, set())
+            result[group.name] = [c for c in group.collections if c in in_library]
+            missing = len(group.collections) - len(result[group.name])
+            if missing:
+                logger.info(
+                    "Group '%s': %d collection(s) not found in '%s', skipped",
+                    group.name, missing, group.library,
+                )
     return result
 
 

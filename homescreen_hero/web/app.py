@@ -120,6 +120,15 @@ def create_app() -> FastAPI:
         except Exception as exc:  # pragma: no cover
             logger.exception("Failed to start rotation scheduler: %s", exc)
 
+        # Older configs don't record which library each group belongs to.
+        try:
+            from homescreen_hero.core.group_libraries import migrate_group_libraries_on_startup
+            from homescreen_hero.core.integrations.plex_client import get_plex_server
+
+            migrate_group_libraries_on_startup(get_plex_server(load_config()))
+        except Exception as exc:
+            logger.warning("Could not assign libraries to groups on startup: %s", exc)
+
         # Sync user filter settings for per-user targeting (hsh-hide-{username} labels).
         try:
             config = load_config()

@@ -142,8 +142,10 @@ def _get_collection_pool(
     group: CollectionGroupConfig,
     smart_group_collections: Optional[Dict[str, List[str]]] = None,
 ) -> List[str]:
-    # Return the collection pool for a group — resolved smart rules or static list.
-    if group.smart and smart_group_collections and group.name in smart_group_collections:
+    # Return the collection pool for a group. Pools resolved up front (smart rules,
+    # and manual lists narrowed to the group's library) take priority over the
+    # raw collection list.
+    if smart_group_collections and group.name in smart_group_collections:
         return list(smart_group_collections[group.name])
     return list(group.collections)
 

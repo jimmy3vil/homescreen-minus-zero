@@ -56,13 +56,16 @@ def build_collection_metadata(server, config: AppConfig) -> List[CollectionMetad
             third_party[src.name] = ("mal", src.plex_library)
 
     # Iterate Plex libraries and build metadata for each collection
+    # Collections are unique per library; the same name can exist in several.
+    seen: set = set()
     seen_names: set = set()
     for section in server.library.sections():
         try:
             for coll in section.collections():
                 name = coll.title
-                if name in seen_names:
+                if (section.title, name) in seen:
                     continue
+                seen.add((section.title, name))
                 seen_names.add(name)
 
                 # Determine source — third-party takes priority over "plex"
@@ -179,11 +182,11 @@ def resolve_smart_rules(
     # Returns list of matching collection names.
     active_rules = [rule for rule in rules if _rule_has_values(rule)]
     if not active_rules:
-        return [coll.name for coll in metadata]
+        return list(dict.fromkeys(coll.name for coll in metadata))
 
     matching = []
     for coll in metadata:
-        if all(_matches_rule(rule, coll) for rule in active_rules):
+        if coll.name not in matching and all(_matches_rule(rule, coll) for rule in active_rules):
             matching.append(coll.name)
 
     logger.debug("Smart rules resolved to %d collections: %s", len(matching), matching)

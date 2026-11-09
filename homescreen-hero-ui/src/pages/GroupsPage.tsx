@@ -73,6 +73,7 @@ type DateRange = {
 type CollectionGroup = {
     name: string;
     enabled: boolean;
+    library?: string | null;
     min_picks: number;
     max_picks: number;
     weight: number;
@@ -197,8 +198,8 @@ export default function GroupsPage() {
             return "all";
         }
     });
-    const [groupLibraries, setGroupLibraries] = useState<Record<string, string[]> | null>(null);
     const [librariesLoaded, setLibrariesLoaded] = useState(false);
+    const [newGroupLibrary, setNewGroupLibrary] = useState("");
     const [viewMode, setViewMode] = useState<ViewMode>(
         () => (localStorage.getItem("groupsViewMode") as ViewMode) || "cards"
     );
@@ -270,16 +271,6 @@ export default function GroupsPage() {
             console.error("Failed to fetch libraries:", e);
         } finally {
             setLibrariesLoaded(true);
-        }
-    };
-
-    const fetchGroupLibraries = async () => {
-        try {
-            const r = await fetchWithAuth("/api/admin/config/groups/libraries");
-            setGroupLibraries(r.ok ? await r.json() : {});
-        } catch (e) {
-            console.error("Failed to fetch group libraries:", e);
-            setGroupLibraries({});
         }
     };
 
@@ -475,7 +466,6 @@ export default function GroupsPage() {
         refreshGroups();
         fetchRotationSettings();
         fetchLibraries();
-        fetchGroupLibraries();
         fetchDisplaySettings();
         fetchGroupLastRotated();
     }, []);
@@ -493,7 +483,13 @@ export default function GroupsPage() {
         () => libraries.filter((l) => l.enabled).map((l) => l.name),
         [libraries]
     );
-    const groupLibrariesReady = librariesLoaded && groupLibraries !== null;
+
+    // With a single enabled library, new groups default to it.
+    useEffect(() => {
+        if (!newGroupLibrary && enabledLibraryNames.length === 1) {
+            setNewGroupLibrary(enabledLibraryNames[0]);
+        }
+    }, [enabledLibraryNames, newGroupLibrary]);
 
     // A remembered choice that's no longer an enabled library falls back to all enabled.
     const effectiveLibraryFilter =
@@ -503,45 +499,41 @@ export default function GroupsPage() {
 
     const isFiltering = searchTerm.trim() !== "" || effectiveLibraryFilter !== "all";
 
-    // Groups are only shown when they draw from an enabled library. Groups with
-    // no collections in any library (e.g. brand new ones) are shown too, so they
-    // can be filled in.
-    const groupIsInEnabledLibrary = useCallback(
-        (name: string) => {
-            const libs = groupLibraries?.[name] ?? [];
-            return libs.length === 0 || libs.some((l) => enabledLibraryNames.includes(l));
-        },
-        [groupLibraries, enabledLibraryNames]
+    // Groups are only shown when their library is enabled. Groups with no
+    // library set yet are shown too, so they can be assigned one.
+    const groupIsVisible = useCallback(
+        (group: CollectionGroup) => !group.library || enabledLibraryNames.includes(group.library),
+        [enabledLibraryNames]
     );
 
     const hiddenGroupCount = useMemo(
-        () => (groupLibrariesReady ? sortedGroups.filter((g) => !groupIsInEnabledLibrary(g.name)).length : 0),
-        [groupLibrariesReady, sortedGroups, groupIsInEnabledLibrary]
+        () => (librariesLoaded ? sortedGroups.filter((g) => !groupIsVisible(g)).length : 0),
+        [librariesLoaded, sortedGroups, groupIsVisible]
     );
+    const hasUnassignedGroups = useMemo(() => sortedGroups.some((g) => !g.library), [sortedGroups]);
 
     const filteredGroups = useMemo(() => {
-        if (!groupLibrariesReady) return [];
+        if (!librariesLoaded) return [];
         const term = searchTerm.toLowerCase().trim();
         return sortedGroups.filter((group) => {
             if (!group.name.toLowerCase().includes(term)) return false;
-            if (!groupIsInEnabledLibrary(group.name)) return false;
-            const libs = groupLibraries?.[group.name] ?? [];
+            if (!groupIsVisible(group)) return false;
             if (effectiveLibraryFilter === "all") return true;
-            if (effectiveLibraryFilter === "none") return libs.length === 0;
-            return libs.includes(effectiveLibraryFilter);
+            if (effectiveLibraryFilter === "none") return !group.library;
+            return group.library === effectiveLibraryFilter;
         });
-    }, [groupLibrariesReady, sortedGroups, searchTerm, effectiveLibraryFilter, groupLibraries, groupIsInEnabledLibrary]);
+    }, [librariesLoaded, sortedGroups, searchTerm, effectiveLibraryFilter, groupIsVisible]);
 
-    // Dropdown: enabled libraries are selectable; any other library a group draws
-    // from, or that's configured but switched off, is listed as not enabled.
+    // Dropdown: enabled libraries are selectable; libraries that are configured
+    // but switched off, or that a group belongs to, are listed as not enabled.
     const libraryFilterOptions = useMemo(() => {
-        const fromGroups = Object.values(groupLibraries ?? {}).flat();
+        const fromGroups = groups.map((g) => g.library).filter((l): l is string => !!l);
         const configured = libraries.map((l) => l.name);
         const notEnabled = [...new Set([...configured, ...fromGroups])]
             .filter((l) => !enabledLibraryNames.includes(l))
             .sort();
         return { enabled: enabledLibraryNames, notEnabled };
-    }, [libraries, groupLibraries, enabledLibraryNames]);
+    }, [libraries, groups, enabledLibraryNames]);
 
     const handleRename = async () => {
         if (!renaming) return;
@@ -856,7 +848,7 @@ export default function GroupsPage() {
                                             {effectiveLibraryFilter === "all"
                                                 ? "All enabled libraries"
                                                 : effectiveLibraryFilter === "none"
-                                                  ? "No collections yet"
+                                                  ? "No library set"
                                                   : effectiveLibraryFilter}
                                         </span>
                                         <ChevronDown className="h-4 w-4 text-slate-400" />
@@ -865,7 +857,7 @@ export default function GroupsPage() {
                                         {[
                                             { value: "all", label: "All enabled libraries", enabled: true },
                                             ...libraryFilterOptions.enabled.map((l) => ({ value: l, label: l, enabled: true })),
-                                            { value: "none", label: "No collections yet", enabled: true },
+                                            ...(hasUnassignedGroups ? [{ value: "none", label: "No library set", enabled: true }] : []),
                                             ...libraryFilterOptions.notEnabled.map((l) => ({ value: l, label: l, enabled: false })),
                                         ].map((opt) => (
                                             <Listbox.Option
@@ -906,15 +898,15 @@ export default function GroupsPage() {
                     </div>
                 </div>
                 <div className="space-y-4">
-                {groupLibrariesReady && hiddenGroupCount > 0 && (
+                {librariesLoaded && hiddenGroupCount > 0 && (
                     <p className="text-xs text-slate-500">
                         {hiddenGroupCount} group{hiddenGroupCount !== 1 ? "s are" : " is"} hidden because{" "}
-                        {hiddenGroupCount !== 1 ? "their collections are" : "its collections are"} only in libraries that aren't enabled.
+                        {hiddenGroupCount !== 1 ? "their library isn't" : "its library isn't"} enabled.
                     </p>
                 )}
-                {!groupLibrariesReady ? (
+                {!librariesLoaded ? (
                     <div className="flex items-center gap-2 text-sm text-slate-400">
-                        <Loader2 className="h-4 w-4 animate-spin" /> Checking which libraries your groups use…
+                        <Loader2 className="h-4 w-4 animate-spin" /> Loading groups…
                     </div>
                 ) : filteredGroups.length ? (
                     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
@@ -980,6 +972,9 @@ export default function GroupsPage() {
                                                         </span>
                                                         <span className="text-xs text-slate-500 shrink-0">
                                                             {group.smart ? `${group.rules?.length || 0} rules` : `${group.collections.length} collections`}
+                                                        </span>
+                                                        <span className={`text-[10px] uppercase tracking-wide shrink-0 ${group.library ? "text-slate-500" : "text-amber-400"}`}>
+                                                            {group.library || "No library set"}
                                                         </span>
                                                         {groupLastRotated[group.name] && (
                                                             <span className="hidden sm:inline text-xs text-slate-600 shrink-0" title={`Last rotated: ${new Date(groupLastRotated[group.name]!).toLocaleString()}`}>
@@ -1107,6 +1102,9 @@ export default function GroupsPage() {
                                                             <div className="flex items-start justify-between gap-3">
                                                                 <div className="min-w-0">
                                                                     <p className="text-lg font-bold text-white truncate" title={group.name}>{group.name || "Untitled group"}</p>
+                                                                    <p className={`text-[10px] uppercase tracking-wide ${group.library ? "text-slate-500" : "text-amber-400"}`}>
+                                                                        {group.library || "No library set"}
+                                                                    </p>
                                                                     <p className="text-xs text-slate-400">
                                                                         {group.collections.length} collections
                                                                         {groupLastRotated[group.name] && (
@@ -1460,7 +1458,7 @@ export default function GroupsPage() {
                                 value={newGroupName}
                                 onChange={(e) => { setNewGroupName(e.target.value); setCreateError(null); }}
                                 onKeyDown={(e) => {
-                                    if (e.key === "Enter" && newGroupName.trim() && !creatingGroup) {
+                                    if (e.key === "Enter" && newGroupName.trim() && newGroupLibrary && !creatingGroup) {
                                         e.preventDefault();
                                         document.getElementById("create-group-btn")?.click();
                                     }
@@ -1468,6 +1466,25 @@ export default function GroupsPage() {
                                 placeholder="e.g. Horror Collections, Trakt Lists..."
                                 className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary/70 text-sm"
                             />
+                            <div className="space-y-1.5">
+                                <label htmlFor="new-group-library" className="block text-xs font-medium text-slate-400 uppercase tracking-wider">
+                                    Library
+                                </label>
+                                <select
+                                    id="new-group-library"
+                                    value={newGroupLibrary}
+                                    onChange={(e) => { setNewGroupLibrary(e.target.value); setCreateError(null); }}
+                                    className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-primary/70 text-sm"
+                                >
+                                    <option value="" disabled>Choose a library…</option>
+                                    {libraries.map((lib) => (
+                                        <option key={lib.name} value={lib.name} disabled={!lib.enabled}>
+                                            {lib.name}{lib.enabled ? "" : " (not enabled)"}
+                                        </option>
+                                    ))}
+                                </select>
+                                <p className="text-xs text-slate-500">All of this group's collections come from this library.</p>
+                            </div>
                             {createError && (
                                 <p className="text-sm text-red-400">{createError}</p>
                             )}
@@ -1482,15 +1499,15 @@ export default function GroupsPage() {
                                 <button
                                     id="create-group-btn"
                                     type="button"
-                                    disabled={!newGroupName.trim() || creatingGroup}
+                                    disabled={!newGroupName.trim() || !newGroupLibrary || creatingGroup}
                                     onClick={async () => {
                                         try {
                                             setCreatingGroup(true);
                                             setCreateError(null);
                                             const isSmart = newGroupType === "smart";
                                             const payload = isSmart
-                                                ? { name: newGroupName.trim(), enabled: true, smart: true, rules: [{ field: "library", operator: "is", values: [] }], min_picks: 0, max_picks: 1, weight: 1, min_gap_rotations: 0, display_order: 0, visibility_home: true, visibility_shared: false, visibility_recommended: false, date_range: null, collections: [] }
-                                                : { name: newGroupName.trim(), enabled: true, min_picks: 0, max_picks: 1, weight: 1, min_gap_rotations: 0, display_order: 0, visibility_home: true, visibility_shared: false, visibility_recommended: false, date_range: null, collections: [] };
+                                                ? { name: newGroupName.trim(), library: newGroupLibrary, enabled: true, smart: true, rules: [{ field: "library", operator: "is", values: [newGroupLibrary] }], min_picks: 0, max_picks: 1, weight: 1, min_gap_rotations: 0, display_order: 0, visibility_home: true, visibility_shared: false, visibility_recommended: false, date_range: null, collections: [] }
+                                                : { name: newGroupName.trim(), library: newGroupLibrary, enabled: true, min_picks: 0, max_picks: 1, weight: 1, min_gap_rotations: 0, display_order: 0, visibility_home: true, visibility_shared: false, visibility_recommended: false, date_range: null, collections: [] };
                                             const r = await fetchWithAuth("/api/admin/config/groups", {
                                                 method: "POST",
                                                 headers: { "Content-Type": "application/json" },

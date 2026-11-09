@@ -181,8 +181,8 @@ def apply_rotation_targeting(
 
     for group in groups_with_targeting:
         # Get this collections from the gorup
-        if group.smart and smart_group_collections:
-            pool = smart_group_collections.get(group.name, [])
+        if smart_group_collections and group.name in smart_group_collections:
+            pool = smart_group_collections[group.name]
         else:
             pool = group.collections
 

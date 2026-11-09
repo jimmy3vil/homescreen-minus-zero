@@ -63,6 +63,8 @@ def create_group(
 ) -> ConfigSaveResponse:
     # Append new collection group to config.yaml
     try:
+        if not payload.library:
+            raise ValueError("Choose which library this group's collections come from.")
         data = load_config_mapping()
         groups = load_group_list(data)
 
@@ -366,10 +368,14 @@ def preview_smart_group(
         config = load_config()
         server = get_plex_server(config)
         metadata = build_collection_metadata(server, config)
+        if payload.library:
+            metadata = [m for m in metadata if m.library == payload.library]
         matching_names = resolve_smart_rules(payload.rules, metadata)
 
         # Build name → metadata lookup for poster URLs
-        meta_by_name = {m.name: m for m in metadata}
+        meta_by_name = {}
+        for m in metadata:
+            meta_by_name.setdefault(m.name, m)
         collections = [
             SmartGroupPreviewCollection(
                 name=name,
@@ -394,61 +400,6 @@ def get_smart_filter_options(
         server = get_plex_server(config)
         options = get_available_filter_options(server, config)
         return SmartFilterOptionsResponse(**options)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-def compute_group_libraries(groups, metadata, libraries_by_name) -> dict[str, list[str]]:
-    # Map each group name to the Plex libraries its collections live in.
-    # Groups don't store a library, so this is derived: manual groups by
-    # looking up their collection names, smart groups by resolving their rules.
-    # A collection name that exists in several libraries counts for each.
-    from homescreen_hero.core.smart_groups import resolve_smart_rules
-
-    result: dict[str, list[str]] = {}
-    for group in groups:
-        names = (
-            resolve_smart_rules(group.rules, metadata)
-            if group.smart
-            else group.collections
-        )
-        libs: set[str] = set()
-        for name in names:
-            libs |= libraries_by_name.get(name, set())
-        result[group.name] = sorted(libs)
-    return result
-
-
-@router.get("/groups/libraries", response_model=dict[str, list[str]])
-def get_group_libraries(
-    current_user: CurrentUser = Depends(require_admin),
-) -> dict[str, list[str]]:
-    # Which Plex libraries each group draws its collections from (for filtering).
-    from homescreen_hero.core.smart_groups import build_collection_metadata
-
-    try:
-        config = load_config()
-        server = get_plex_server(config)
-        # Smart groups need full collection metadata to resolve their rules.
-        metadata = (
-            build_collection_metadata(server, config)
-            if any(g.smart for g in config.groups)
-            else []
-        )
-        # Built directly from Plex rather than from metadata, which keeps only
-        # the first library for collection names that appear in several.
-        libraries_by_name: dict[str, set[str]] = {}
-        for coll in metadata:
-            libraries_by_name.setdefault(coll.name, set()).add(coll.library)
-        for section in server.library.sections():
-            if section.type not in ("movie", "show"):
-                continue
-            try:
-                for coll in section.collections():
-                    libraries_by_name.setdefault(coll.title, set()).add(section.title)
-            except Exception:
-                continue
-        return compute_group_libraries(config.groups, metadata, libraries_by_name)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

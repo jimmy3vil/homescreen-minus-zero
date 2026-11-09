@@ -490,6 +490,7 @@ class AuthSettingsSaveRequest(BaseModel):
 # Smart group preview request — evaluate rules and return matching collections.
 class SmartGroupPreviewRequest(BaseModel):
     rules: List[SmartGroupRule]
+    library: Optional[str] = None
 
 
 class SmartGroupPreviewCollection(BaseModel):

@@ -162,6 +162,13 @@ class SmartGroupRule(BaseModel):
 class CollectionGroupConfig(BaseModel):
     name: str = Field(..., description="Name of this group (e.g. 'Christmas')")
     enabled: bool = Field(default=True)
+    library: Optional[str] = Field(
+        default=None,
+        description=(
+            "Plex library this group's collections come from. Collections are only "
+            "picked from this library. None = not assigned yet (older configs)."
+        ),
+    )
     min_picks: int = Field(
         default=0,
         ge=0,
