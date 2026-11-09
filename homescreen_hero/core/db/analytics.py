@@ -189,3 +189,34 @@ def get_latest_analytics_for_collection(collection_name: str) -> Optional[Collec
         query = query.limit(1)
 
         return query.first()
+
+
+def get_latest_plays_by_collection(plex_library: str) -> Dict[str, int]:
+    """
+    Latest recorded Total Plays for every collection in a library.
+
+    Total Plays is the sum of plays (last 30 days, from Tautulli) of all items
+    in the collection, recorded when the collection was part of a rotation.
+    Collections that were never recorded are absent.
+    """
+    with get_session() as session:
+        latest = (
+            session.query(
+                CollectionAnalytics.collection_name,
+                func.max(CollectionAnalytics.collected_at).label("latest"),
+            )
+            .filter(CollectionAnalytics.plex_library == plex_library)
+            .group_by(CollectionAnalytics.collection_name)
+            .subquery()
+        )
+        rows = (
+            session.query(CollectionAnalytics.collection_name, CollectionAnalytics.total_plays)
+            .join(
+                latest,
+                (CollectionAnalytics.collection_name == latest.c.collection_name)
+                & (CollectionAnalytics.collected_at == latest.c.latest),
+            )
+            .filter(CollectionAnalytics.plex_library == plex_library)
+            .all()
+        )
+        return {name: int(plays or 0) for name, plays in rows}

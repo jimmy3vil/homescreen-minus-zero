@@ -1410,3 +1410,78 @@ def create_smart_collection_endpoint(
         raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
     invalidate_collections_cache()
     return {"success": True, "title": title, "library": library}
+
+
+# ---------------------------------------------------------------- per-library collections page
+
+@router.get("/library/{library}/overview")
+def get_library_collections_overview(
+    library: str,
+    refresh: bool = False,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    # Every collection in one enabled library, with what the Collections page
+    # sorts and filters on. Cached briefly; refresh=true rebuilds it.
+    from homescreen_hero.core.collections_overview import get_overview
+
+    server, _ = _enabled_section(library)
+    try:
+        return get_overview(server, load_config(), library, _cache_version, refresh=refresh)
+    except Exception as e:
+        logger.error("Collections overview failed for '%s': %s", library, e)
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+
+
+@router.get("/library/{library}/collection/{rating_key}/items")
+def get_collection_row_items(
+    library: str,
+    rating_key: str,
+    limit: int = 20,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    # First items of a collection, in its own sort order, for its row preview.
+    from homescreen_hero.core.collections_overview import collection_items
+
+    server, _ = _enabled_section(library)
+    try:
+        return collection_items(server, rating_key, limit=max(1, min(limit, 50)))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+
+
+@router.get("/library/{library}/containing/{item_rating_key}")
+def get_collections_containing_item(
+    library: str,
+    item_rating_key: str,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    # Titles of the collections a movie or show belongs to.
+    from homescreen_hero.core.collections_overview import collections_containing
+
+    server, _ = _enabled_section(library)
+    try:
+        return {"collections": collections_containing(server, item_rating_key)}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+
+
+@router.get("/library/{library}/collection/{rating_key}/smart-summary")
+def get_smart_collection_summary(
+    library: str,
+    rating_key: str,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    # A smart collection's rules in plain words, for hover details.
+    from homescreen_hero.core.smart_collections import describe_smart_collection
+
+    server, section = _enabled_section(library)
+    try:
+        collection = server.fetchItem(int(rating_key))
+        content = getattr(collection, "content", None)
+        if not getattr(collection, "smart", False) or not content:
+            raise HTTPException(status_code=400, detail="Not a smart collection")
+        return describe_smart_collection(section, content)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")

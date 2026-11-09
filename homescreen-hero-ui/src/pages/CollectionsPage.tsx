@@ -1,10 +1,22 @@
-import { useEffect, useState, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { fetchWithAuth } from "../utils/api";
 import SmartCollectionBuilder, { type SmartQuery } from "../components/SmartCollectionBuilder";
-import { RefreshCw, Plus, Search, Trash2, Check, ChevronDown, ArrowUpAZ, ArrowDownAZ, Edit, Image, Pin, Home, Users, Star, LayoutGrid, List } from "lucide-react";
-import { useTheme } from "../utils/theme";
-import { Popover, PopoverTrigger, PopoverContent } from "../components/ui/popover";
+import {
+    ArrowDownAZ,
+    ArrowUpAZ,
+    Check,
+    ChevronDown,
+    Filter,
+    Image,
+    LayoutGrid,
+    List,
+    Plus,
+    RefreshCw,
+    Rows3,
+    Search,
+    X,
+} from "lucide-react";
 import { Listbox } from "@headlessui/react";
 import Toast from "../components/Toast";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
@@ -17,14 +29,35 @@ import {
     DialogCloseButton,
     DialogFooter,
 } from "../components/ui/dialog";
+import CollectionFilterPanel from "../components/collections/CollectionFilterPanel";
+import {
+    CollectionCardView,
+    CollectionListItem,
+    CollectionRow,
+    Incremental,
+    type CollectionActions,
+} from "../components/collections/CollectionViews";
+import type { VisibilityOptions } from "../components/collections/PinPopover";
+import {
+    DEFAULT_FILTERS,
+    SORTS,
+    TOTAL_PLAYS_HINT,
+    activeFilterChips,
+    applyFilters,
+    clearAllFilters,
+    clearFilter,
+    filtersToParams,
+    loadStoredFilters,
+    paramsToFilters,
+    sortCollections,
+    storeFilters,
+    type CollectionFilters,
+    type CollectionOverview,
+    type Scope,
+} from "../components/collections/collectionFilters";
 
-type Collection = {
-    title: string;
-    library: string;
-    poster_url: string | null;
-    item_count: number;
-    is_active: boolean;
-};
+// The Collections page works on one library at a time.
+type Collection = CollectionOverview;
 
 type LibraryItem = {
     rating_key: string;
@@ -37,306 +70,74 @@ type LibraryItem = {
 type Library = {
     title: string;
     type: string;
+    enabled?: boolean;
 };
 
-// Cache configuration
-const COLLECTIONS_CACHE_KEY = "homescreen-hero-collections-cache";
-const COLLECTIONS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+type Overview = { library: string; collections: CollectionOverview[]; groups: string[]; labels: string[] };
+type ViewMode = "rows" | "cards" | "list";
 
-type CollectionsCache = {
-    data: Collection[];
-    timestamp: number;
-    version: number;
-};
+const LIBRARY_KEY = "collections.library";
+const VIEW_KEY = "collections.view";
 
-type VisibilityOptions = {
-    home: boolean;
-    shared: boolean;
-    recommended: boolean;
-};
+const SCOPES: { key: Scope; label: string }[] = [
+    { key: "all", label: "All Collections" },
+    { key: "rotation", label: "Currently In Rotation" },
+    { key: "pinned", label: "Pinned Only" },
+];
 
-type ViewMode = "cards" | "list";
-
-// Shared pin popover used by both card and list views
-function PinPopover({
-    isPinned,
-    isPinning,
-    onPinWithVisibility,
-    onUnpin,
-}: {
-    isPinned: boolean;
-    isPinning: boolean;
-    onPinWithVisibility: (visibility: VisibilityOptions) => void;
-    onUnpin: () => void;
-}) {
-    const [popoverOpen, setPopoverOpen] = useState(false);
-    const [visibility, setVisibility] = useState<VisibilityOptions>({
-        home: true,
-        shared: false,
-        recommended: false,
-    });
-
-    const handlePin = () => {
-        onPinWithVisibility(visibility);
-        setPopoverOpen(false);
-    };
-
-    const handleUnpin = () => {
-        onUnpin();
-        setPopoverOpen(false);
-    };
-
-    const handleOpenChange = (open: boolean) => {
-        if (open) {
-            setVisibility({ home: true, shared: false, recommended: false });
-        }
-        setPopoverOpen(open);
-    };
-
-    return (
-        <Popover open={popoverOpen} onOpenChange={handleOpenChange}>
-            <PopoverTrigger asChild>
-                <button
-                    disabled={isPinning}
-                    className={`p-2 rounded-lg transition-colors ${
-                        isPinned
-                            ? "bg-primary/80 hover:bg-primary text-white"
-                            : "bg-slate-800/70 hover:bg-slate-700/90 text-slate-300"
-                    } disabled:opacity-50`}
-                    title={isPinned ? "Edit pin settings" : "Pin to home"}
-                    onClick={(e) => e.stopPropagation()}
-                >
-                    <Pin size={16} className={isPinned ? "fill-current" : ""} />
-                </button>
-            </PopoverTrigger>
-            <PopoverContent
-                align="end"
-                className="w-44 p-2.5 bg-slate-900/90 backdrop-blur-md border-slate-700/50"
-                onClick={(e) => e.stopPropagation()}
-            >
-                <div className="space-y-1.5">
-                    <label className="flex items-center gap-2 px-1.5 py-1 rounded-md cursor-pointer hover:bg-white/5 transition-colors">
-                        <input
-                            type="checkbox"
-                            checked={visibility.home}
-                            onChange={(e) => setVisibility(v => ({ ...v, home: e.target.checked }))}
-                            className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800/50 text-primary focus:ring-1 focus:ring-primary/50 focus:ring-offset-0"
-                        />
-                        <Home size={12} className="text-slate-500" />
-                        <span className="text-xs text-slate-300">My Home</span>
-                    </label>
-
-                    <label className="flex items-center gap-2 px-1.5 py-1 rounded-md cursor-pointer hover:bg-white/5 transition-colors">
-                        <input
-                            type="checkbox"
-                            checked={visibility.shared}
-                            onChange={(e) => setVisibility(v => ({ ...v, shared: e.target.checked }))}
-                            className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800/50 text-primary focus:ring-1 focus:ring-primary/50 focus:ring-offset-0"
-                        />
-                        <Users size={12} className="text-slate-500" />
-                        <span className="text-xs text-slate-300">Shared</span>
-                    </label>
-
-                    <label className="flex items-center gap-2 px-1.5 py-1 rounded-md cursor-pointer hover:bg-white/5 transition-colors">
-                        <input
-                            type="checkbox"
-                            checked={visibility.recommended}
-                            onChange={(e) => setVisibility(v => ({ ...v, recommended: e.target.checked }))}
-                            className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800/50 text-primary focus:ring-1 focus:ring-primary/50 focus:ring-offset-0"
-                        />
-                        <Star size={12} className="text-slate-500" />
-                        <span className="text-xs text-slate-300">Recommended</span>
-                    </label>
-
-                    <div className="pt-1.5 flex gap-1.5">
-                        {isPinned ? (
-                            <>
-                                <button
-                                    onClick={handleUnpin}
-                                    disabled={isPinning}
-                                    className="flex-1 px-2 py-1 text-[10px] font-medium rounded-md border border-slate-600/50 text-slate-400 hover:bg-slate-800/50 hover:text-white transition-colors disabled:opacity-50"
-                                >
-                                    Unpin
-                                </button>
-                                <button
-                                    onClick={handlePin}
-                                    disabled={isPinning || (!visibility.home && !visibility.shared && !visibility.recommended)}
-                                    className="flex-1 px-2 py-1 text-[10px] font-medium rounded-md bg-primary/90 hover:bg-primary text-white transition-colors disabled:opacity-50"
-                                >
-                                    Update
-                                </button>
-                            </>
-                        ) : (
-                            <button
-                                onClick={handlePin}
-                                disabled={isPinning || (!visibility.home && !visibility.shared && !visibility.recommended)}
-                                className="w-full px-2 py-1 text-[10px] font-medium rounded-md bg-primary/90 hover:bg-primary text-white transition-colors disabled:opacity-50"
-                            >
-                                Pin
-                            </button>
-                        )}
-                    </div>
-                </div>
-            </PopoverContent>
-        </Popover>
-    );
+function readStorage(key: string): string | null {
+    try {
+        return localStorage.getItem(key);
+    } catch {
+        return null;
+    }
 }
 
-// Collection card component for grid view
-function CollectionCard({
-    collection,
-    index,
-    isPinned,
-    isPinning,
-    onPinWithVisibility,
-    onUnpin,
-    onClick,
-    onEdit,
-    onDelete,
-    isPlex,
-}: {
-    collection: Collection;
-    index: number;
-    isPinned: boolean;
-    isPinning: boolean;
-    onPinWithVisibility: (visibility: VisibilityOptions) => void;
-    onUnpin: () => void;
-    onClick: () => void;
-    onEdit: (e: React.MouseEvent) => void;
-    onDelete: (e: React.MouseEvent) => void;
-    isPlex: boolean;
-}) {
-    const cardClass = isPlex
-        ? "group relative rounded-lg overflow-visible animate-slide-up text-left cursor-pointer"
-        : "group relative rounded-xl overflow-hidden border border-slate-800/60 bg-slate-900/50 shadow-md hover:shadow-xl hover:shadow-primary/10 hover:border-primary/40 hover:-translate-y-1 transition-all duration-300 animate-slide-up text-left cursor-pointer";
-
-    const imgClass = isPlex
-        ? "w-full h-full object-cover transition-all duration-300 ease-out"
-        : "w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-110";
-
-    return (
-        <div
-            key={`${collection.library}-${collection.title}`}
-            role="button"
-            tabIndex={0}
-            onClick={onClick}
-            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); } }}
-            className={cardClass}
-            style={{ animationDelay: `${index * 0.03}s` }}
-        >
-            {/* Poster Image */}
-            <div className={`aspect-[2/3] bg-slate-800 relative overflow-hidden ${isPlex ? "rounded-lg border border-slate-700/40 group-hover:border-primary/70 transition-all duration-300" : ""}`}>
-                {collection.poster_url ? (
-                    <img
-                        src={collection.poster_url}
-                        alt={collection.title}
-                        className={imgClass}
-                        loading="lazy"
-                    />
-                ) : (
-                    <div className="w-full h-full flex items-center justify-center text-slate-600">
-                        No Poster
-                    </div>
-                )}
-
-                {/* Edit Button (shown on hover, top-left) */}
-                <button
-                    onClick={onEdit}
-                    className={`absolute top-2 left-2 p-2 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity z-10 ${isPlex ? "bg-black/60 hover:bg-black/80" : "bg-primary/70 hover:bg-primary/90"}`}
-                    title="Edit collection"
-                >
-                    <Edit size={16} />
-                </button>
-
-                {/* Item Count Badge Overlay */}
-                <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-slate-900/60 text-slate-300 border border-slate-700/50 backdrop-blur-sm">
-                        {collection.item_count} items
-                    </span>
-                </div>
-
-                {/* Active Badge Overlay */}
-                {collection.is_active && (
-                    <div className="absolute bottom-2 left-2">
-                        <span className={`inline-flex items-center px-2 py-1 rounded-md text-xs font-medium backdrop-blur-sm ${
-                            isPlex
-                                ? "bg-primary/70 text-white border border-primary/50"
-                                : "bg-emerald-900/70 text-emerald-400 border border-emerald-800/50"
-                        }`}>
-                            Active
-                        </span>
-                    </div>
-                )}
-            </div>
-
-            {/* Action Buttons (shown on hover, top-right) */}
-            <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                <PinPopover
-                    isPinned={isPinned}
-                    isPinning={isPinning}
-                    onPinWithVisibility={onPinWithVisibility}
-                    onUnpin={onUnpin}
-                />
-
-                {/* Delete Button */}
-                <button
-                    onClick={onDelete}
-                    className={`p-2 text-white rounded-lg ${isPlex ? "bg-black/60 hover:bg-red-600/80" : "bg-red-600/70 hover:bg-red-600/90"}`}
-                    title="Delete collection"
-                >
-                    <Trash2 size={16} />
-                </button>
-            </div>
-
-            {/* Collection Info */}
-            <div className="p-3">
-                <h3 className="text-white font-medium text-sm truncate text-center">
-                    {collection.title}
-                </h3>
-                {!isPlex && (
-                    <p className="text-slate-400 text-xs text-center mt-1">
-                        {collection.library}
-                    </p>
-                )}
-            </div>
-        </div>
-    );
+function writeStorage(key: string, value: string) {
+    try {
+        localStorage.setItem(key, value);
+    } catch {
+        // Storage unavailable; the choice just won't be remembered
+    }
 }
 
 export default function CollectionsPage() {
-    const [collections, setCollections] = useState<Collection[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [searchQuery, setSearchQuery] = useState("");
-    const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
-    // "enabled" = every library switched on in Settings, otherwise one enabled
-    // library's name. Libraries that aren't enabled are never shown.
-    const [selectedLibraryFilter, setSelectedLibraryFilterState] = useState<string>(() => {
-        try {
-            return localStorage.getItem("collectionsLibraryFilter") || "enabled";
-        } catch {
-            return "enabled";
-        }
-    });
-    const setSelectedLibraryFilter = (value: string) => {
-        setSelectedLibraryFilterState(value);
-        try {
-            localStorage.setItem("collectionsLibraryFilter", value);
-        } catch {
-            // Storage unavailable; the filter just won't be remembered.
-        }
-    };
-    const [enabledLibraries, setEnabledLibraries] = useState<string[] | null>(null);
-    const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
-    const [viewMode, setViewMode] = useState<ViewMode>(
-        () => (localStorage.getItem("collectionsViewMode") as ViewMode) || "cards"
-    );
-    const [lastCacheCheck, setLastCacheCheck] = useState<number | null>(null);
-    const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+    const navigate = useNavigate();
+    const [searchParams, setSearchParams] = useSearchParams();
 
-    // Pinned collections
-    const [pinnedCollections, setPinnedCollections] = useState<Set<string>>(new Set());
-    const [pinningCollection, setPinningCollection] = useState<string | null>(null);
+    // ---------------------------------------------------------------- libraries
+    const [availableLibraries, setAvailableLibraries] = useState<Library[]>([]);
+    const [loadingLibraries, setLoadingLibraries] = useState(true);
+    const enabledLibraries = useMemo(
+        () => availableLibraries.filter((l) => l.enabled).map((l) => l.title),
+        [availableLibraries]
+    );
+    const isLibraryEnabled = (library: string) => enabledLibraries.includes(library);
+
+    const [library, setLibrary] = useState<string>(() => searchParams.get("lib") ?? readStorage(LIBRARY_KEY) ?? "");
+    const [filters, setFilters] = useState<CollectionFilters>(() => {
+        // The page address wins (bookmarks, back button); otherwise this library's remembered filters
+        const lib = searchParams.get("lib") ?? readStorage(LIBRARY_KEY) ?? "";
+        const fromUrl = paramsToFilters(searchParams);
+        const urlHasFilters = [...searchParams.keys()].some((k) => k !== "lib");
+        return urlHasFilters ? fromUrl : (lib && loadStoredFilters(lib)) || DEFAULT_FILTERS;
+    });
+
+    const [view, setView] = useState<ViewMode>(() => (readStorage(VIEW_KEY) as ViewMode) || "rows");
+    const changeView = (v: ViewMode) => {
+        setView(v);
+        writeStorage(VIEW_KEY, v);
+    };
+
+    // ---------------------------------------------------------------- collections
+    const [overview, setOverview] = useState<Overview | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [filterPanelOpen, setFilterPanelOpen] = useState(false);
+    const [movieTitles, setMovieTitles] = useState<Set<string> | null>(null);
+    const [pinningKey, setPinningKey] = useState<string | null>(null);
+    const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+    const searchRef = useRef<HTMLInputElement | null>(null);
 
     // Create collection modal
     const [showCreateModal, setShowCreateModal] = useState(false);
@@ -347,10 +148,6 @@ export default function CollectionsPage() {
     const [smartQuery, setSmartQuery] = useState<SmartQuery | null>(null);
     const [creating, setCreating] = useState(false);
     const [pendingDelete, setPendingDelete] = useState<{ library: string; title: string } | null>(null);
-
-    // Available libraries
-    const [availableLibraries, setAvailableLibraries] = useState<Library[]>([]);
-    const [loadingLibraries, setLoadingLibraries] = useState(false);
 
     // Movie search for create modal
     const [movieSearchQuery, setMovieSearchQuery] = useState("");
@@ -369,248 +166,167 @@ export default function CollectionsPage() {
     const [quickEditPosterMode, setQuickEditPosterMode] = useState<"upload" | "url">("upload");
     const [quickEditing, setQuickEditing] = useState(false);
 
-    const navigate = useNavigate();
-    const { accent } = useTheme();
-    const isPlex = accent === "plex-orange";
-
+    // Load libraries once; pick a library if none is chosen or it's no longer enabled
     useEffect(() => {
-        loadCollections();
-        loadPinnedCollections();
-        loadAvailableLibraries();
-        fetchWithAuth("/api/admin/config/plex")
+        fetchWithAuth("/api/collections/libraries")
             .then((r) => r.json())
-            .then((data) => {
-                const libs: { name: string; enabled: boolean }[] = data.libraries ?? [];
-                setEnabledLibraries(libs.filter((l) => l.enabled).map((l) => l.name));
-            })
-            .catch((e) => console.error("Failed to load enabled libraries:", e));
+            .then((data) => setAvailableLibraries(data.libraries ?? []))
+            .catch(() => setToast({ message: "Failed to load libraries", type: "error" }))
+            .finally(() => setLoadingLibraries(false));
     }, []);
 
-    // Debounce collections search
     useEffect(() => {
-        const timeoutId = setTimeout(() => {
-            setDebouncedSearchQuery(searchQuery);
-        }, 300); // 300ms delay
+        if (loadingLibraries) return;
+        if (!library || !enabledLibraries.includes(library)) {
+            const first = enabledLibraries[0] ?? "";
+            if (first !== library) {
+                setLibrary(first);
+                setFilters((first && loadStoredFilters(first)) || DEFAULT_FILTERS);
+            }
+        }
+    }, [loadingLibraries, enabledLibraries, library]);
 
-        return () => clearTimeout(timeoutId);
-    }, [searchQuery]);
+    const switchLibrary = (next: string) => {
+        if (next === library) return;
+        setLibrary(next);
+        setOverview(null);
+        setFilters(loadStoredFilters(next) || DEFAULT_FILTERS);
+    };
 
-    // Debounce movie search
+    // Keep the page address and this library's memory in step with the filters
     useEffect(() => {
-        if (!newCollectionLibrary) return;
+        if (!library) return;
+        writeStorage(LIBRARY_KEY, library);
+        storeFilters(library, filters);
+        const params = filtersToParams(filters);
+        params.set("lib", library);
+        setSearchParams(params, { replace: true });
+    }, [library, filters, setSearchParams]);
 
-        const timeoutId = setTimeout(() => {
-            searchMovies(movieSearchQuery);
-        }, 300); // 300ms delay
-
-        return () => clearTimeout(timeoutId);
-    }, [movieSearchQuery, newCollectionLibrary]);
-
-    // Load available libraries when modal opens
-    useEffect(() => {
-        if (showCreateModal && availableLibraries.length === 0) {
-            loadAvailableLibraries();
-        }
-    }, [showCreateModal]);
-
-    // Default the new collection's library to the first enabled one
-    useEffect(() => {
-        if (!showCreateModal || newCollectionLibrary || !enabledLibraries) return;
-        const firstEnabled = availableLibraries.find((lib) => enabledLibraries.includes(lib.title));
-        if (firstEnabled) {
-            setNewCollectionLibrary(firstEnabled.title);
-            searchMovies("", firstEnabled.title);
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [showCreateModal, availableLibraries, enabledLibraries]);
-
-    const loadAvailableLibraries = async () => {
-        try {
-            setLoadingLibraries(true);
-            const response = await fetchWithAuth("/api/collections/libraries");
-            const data = await response.json();
-            setAvailableLibraries(data.libraries);
-        } catch (err) {
-            console.error("Failed to load libraries:", err);
-            setToast({ message: "Failed to load available libraries", type: "error" });
-        } finally {
-            setLoadingLibraries(false);
-        }
-    };
-
-    const loadPinnedCollections = async () => {
-        try {
-            const response = await fetchWithAuth("/api/collections/pinned");
-            const data = await response.json();
-            const pinnedNames = new Set<string>(data.pinned.map((p: { collection_name: string }) => p.collection_name));
-            setPinnedCollections(pinnedNames);
-        } catch (err) {
-            console.error("Failed to load pinned collections:", err);
-        }
-    };
-
-    const handlePinWithVisibility = async (collection: Collection, visibility: VisibilityOptions) => {
-        setPinningCollection(collection.title);
-
-        // Optimistic update
-        const newPinned = new Set(pinnedCollections);
-        newPinned.add(collection.title);
-        setPinnedCollections(newPinned);
-
-        try {
-            const response = await fetchWithAuth("/api/collections/toggle-pin", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    collection_name: collection.title,
-                    library: collection.library,
-                    home: visibility.home,
-                    shared: visibility.shared,
-                    recommended: visibility.recommended,
-                }),
-            });
-
-            const data = await response.json();
-
-            if (data.success) {
-                setToast({ message: "Collection pinned to home", type: "success" });
-            } else {
-                setPinnedCollections(pinnedCollections);
-                setToast({ message: data.message || "Failed to pin collection", type: "error" });
-            }
-        } catch (err) {
-            setPinnedCollections(pinnedCollections);
-            setToast({
-                message: err instanceof Error ? err.message : "Failed to pin collection",
-                type: "error",
-            });
-        } finally {
-            setPinningCollection(null);
-        }
-    };
-
-    const handleUnpin = async (collection: Collection) => {
-        setPinningCollection(collection.title);
-
-        // Optimistic update
-        const newPinned = new Set(pinnedCollections);
-        newPinned.delete(collection.title);
-        setPinnedCollections(newPinned);
-
-        try {
-            const response = await fetchWithAuth("/api/collections/toggle-pin", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    collection_name: collection.title,
-                    library: collection.library,
-                }),
-            });
-
-            const data = await response.json();
-
-            if (data.success) {
-                setToast({ message: "Collection unpinned", type: "success" });
-            } else {
-                setPinnedCollections(pinnedCollections);
-                setToast({ message: data.message || "Failed to unpin collection", type: "error" });
-            }
-        } catch (err) {
-            setPinnedCollections(pinnedCollections);
-            setToast({
-                message: err instanceof Error ? err.message : "Failed to unpin collection",
-                type: "error",
-            });
-        } finally {
-            setPinningCollection(null);
-        }
-    };
-
-    const loadFromCache = async (): Promise<CollectionsCache | null> => {
-        try {
-            const cached = localStorage.getItem(COLLECTIONS_CACHE_KEY);
-            if (!cached) return null;
-
-            const parsedCache: CollectionsCache = JSON.parse(cached);
-            const age = Date.now() - parsedCache.timestamp;
-
-            // Check if cache has expired
-            if (age > COLLECTIONS_CACHE_TTL_MS) {
-                localStorage.removeItem(COLLECTIONS_CACHE_KEY);
-                return null;
-            }
-
-            // Check if cache version is still valid
-            try {
-                const versionResponse = await fetchWithAuth("/api/collections/cache-version");
-                const versionData = await versionResponse.json();
-                if (parsedCache.version !== versionData.version) {
-                    localStorage.removeItem(COLLECTIONS_CACHE_KEY);
-                    return null;
-                }
-            } catch (err) {
-                console.warn("Failed to check cache version, using cached data anyway:", err);
-            }
-
-            return parsedCache;
-        } catch (err) {
-            console.error("Failed to load from cache:", err);
-            return null;
-        }
-    };
-
-    const saveToCache = async (data: Collection[]) => {
-        try {
-            // Get current cache version from server
-            const versionResponse = await fetchWithAuth("/api/collections/cache-version");
-            const versionData = await versionResponse.json();
-
-            const cache: CollectionsCache = {
-                data,
-                timestamp: Date.now(),
-                version: versionData.version,
-            };
-            localStorage.setItem(COLLECTIONS_CACHE_KEY, JSON.stringify(cache));
-            setLastCacheCheck(Date.now());
-        } catch (err) {
-            console.error("Failed to save to cache:", err);
-        }
-    };
-
-    const loadCollections = async (forceRefresh = false) => {
-        try {
-            // Try to load from cache first
-            if (!forceRefresh) {
-                const cached = await loadFromCache();
-                if (cached) {
-                    setCollections(cached.data);
-                    setLastCacheCheck(cached.timestamp);
-                    setLoading(false);
-                    return;
-                }
-            }
-
+    const loadOverview = useCallback(
+        async (refresh = false) => {
+            if (!library) return;
             setLoading(true);
-            const response = await fetchWithAuth("/api/collections/all");
-            const data = await response.json();
-            setCollections(data.collections);
-            await saveToCache(data.collections);
             setError(null);
-        } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to load collections");
+            try {
+                const r = await fetchWithAuth(
+                    `/api/collections/library/${encodeURIComponent(library)}/overview${refresh ? "?refresh=true" : ""}`
+                );
+                const data = await r.json();
+                if (!r.ok) throw new Error(data?.detail ?? "Failed to load collections");
+                setOverview(data);
+            } catch (e) {
+                setError(e instanceof Error ? e.message : String(e));
+            } finally {
+                setLoading(false);
+            }
+        },
+        [library]
+    );
+
+    useEffect(() => {
+        loadOverview();
+    }, [loadOverview]);
+
+    // Kept for the create/edit/delete handlers below
+    const loadCollections = (refresh = false) => loadOverview(refresh);
+
+    // "Contains movie" needs the titles of that movie's collections
+    const movieKey = filters.movie?.key;
+    useEffect(() => {
+        if (!movieKey || !library) {
+            setMovieTitles(null);
+            return;
+        }
+        let cancelled = false;
+        fetchWithAuth(`/api/collections/library/${encodeURIComponent(library)}/containing/${encodeURIComponent(movieKey)}`)
+            .then((r) => (r.ok ? r.json() : { collections: [] }))
+            .then((data) => !cancelled && setMovieTitles(new Set<string>(data.collections ?? [])))
+            .catch(() => !cancelled && setMovieTitles(new Set()));
+        return () => {
+            cancelled = true;
+        };
+    }, [movieKey, library]);
+
+    // "/" jumps to search
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            const target = e.target as HTMLElement | null;
+            const typing = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable);
+            if (e.key === "/" && !typing) {
+                e.preventDefault();
+                searchRef.current?.focus();
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, []);
+
+    // ---------------------------------------------------------------- derived
+    const all = useMemo(() => overview?.collections ?? [], [overview]);
+    const visible = useMemo(
+        () => sortCollections(applyFilters(all, filters, filters.movie ? movieTitles : null), filters.sort, filters.dir),
+        [all, filters, movieTitles]
+    );
+    const chips = activeFilterChips(filters);
+    const filtering = chips.length > 0 || filters.scope !== "all";
+    const panelFilterCount = chips.filter((c) => c.key !== "q").length;
+    const listKey = `${library}|${filtersToParams(filters).toString()}`;
+
+    // ---------------------------------------------------------------- pins
+    const updateCollection = (ratingKey: string, patch: Partial<CollectionOverview>) =>
+        setOverview((o) => o && { ...o, collections: o.collections.map((c) => (c.rating_key === ratingKey ? { ...c, ...patch } : c)) });
+
+    const togglePin = async (collection: Collection, visibility?: VisibilityOptions) => {
+        setPinningKey(collection.rating_key);
+        const pinning = !!visibility;
+        updateCollection(collection.rating_key, { pinned: pinning });
+        try {
+            const r = await fetchWithAuth("/api/collections/toggle-pin", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    collection_name: collection.title,
+                    library: collection.library,
+                    ...(visibility ?? {}),
+                }),
+            });
+            const data = await r.json();
+            if (!data.success) throw new Error(data.message || "Pin change failed");
+            setToast({ message: pinning ? `Pinned "${collection.title}"` : `Unpinned "${collection.title}"`, type: "success" });
+            // Pinning changes what's on Home/Recommended right away
+            loadOverview(true);
+        } catch (e) {
+            updateCollection(collection.rating_key, { pinned: !pinning });
+            setToast({ message: e instanceof Error ? e.message : "Pin change failed", type: "error" });
         } finally {
-            setLoading(false);
+            setPinningKey(null);
         }
     };
 
-    const handleRefresh = () => {
-        loadCollections(true);
+    const actions: CollectionActions = {
+        open: (c) => navigate(`/collections/${encodeURIComponent(c.library)}/${encodeURIComponent(c.title)}`),
+        edit: (c) => openQuickEditModal(c),
+        remove: (c) => setPendingDelete({ library: c.library, title: c.title }),
+        pin: (c, v) => togglePin(c, v),
+        unpin: (c) => togglePin(c),
+        pinning: pinningKey,
     };
 
-    const handleViewModeChange = (mode: ViewMode) => {
-        setViewMode(mode);
-        localStorage.setItem("collectionsViewMode", mode);
+    // New collections go into the library being worked on
+    const openCreateModal = () => {
+        setNewCollectionLibrary(library);
+        if (library) searchMovies("", library);
+        setShowCreateModal(true);
     };
+
+    // Debounce movie search in the create modal
+    useEffect(() => {
+        if (!newCollectionLibrary || !showCreateModal) return;
+        const timeoutId = setTimeout(() => searchMovies(movieSearchQuery), 300);
+        return () => clearTimeout(timeoutId);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [movieSearchQuery]);
 
     const searchMovies = async (query: string, libraryName?: string) => {
         // Use provided library name or fall back to state
@@ -797,11 +513,6 @@ export default function CollectionsPage() {
         }
     };
 
-    const handleDeleteCollection = (library: string, title: string, e: React.MouseEvent) => {
-        e.stopPropagation(); // Prevent navigating to collection detail
-        setPendingDelete({ library, title });
-    };
-
     const confirmDeleteCollection = async () => {
         if (!pendingDelete) return;
         const { library, title } = pendingDelete;
@@ -828,8 +539,7 @@ export default function CollectionsPage() {
         }
     };
 
-    const openQuickEditModal = async (collection: Collection, e: React.MouseEvent) => {
-        e.stopPropagation(); // Prevent navigating to collection detail
+    const openQuickEditModal = async (collection: Collection) => {
 
         setEditingCollection(collection);
         setQuickEditTitle(collection.title);
@@ -924,404 +634,286 @@ export default function CollectionsPage() {
         }
     };
 
-    // Every Plex library, including ones with no collections yet; enabled ones first.
-    const uniqueLibraries = Array.from(
-        new Set([...availableLibraries.map((lib) => lib.title), ...collections.map((col) => col.library)])
-    ).sort((a, b) => {
-        const ea = enabledLibraries?.includes(a) ? 0 : 1;
-        const eb = enabledLibraries?.includes(b) ? 0 : 1;
-        return ea - eb || a.localeCompare(b);
-    });
+    // ---------------------------------------------------------------- render
+    const control = "flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/70 transition-colors";
 
-    const isLibraryEnabled = (library: string) => !!enabledLibraries?.includes(library);
-
-    // A remembered choice that's no longer an enabled library falls back to all enabled.
-    const effectiveLibraryFilter =
-        selectedLibraryFilter !== "enabled" && enabledLibraries && !isLibraryEnabled(selectedLibraryFilter)
-            ? "enabled"
-            : selectedLibraryFilter;
-
-    const libraryMatches = (library: string) =>
-        isLibraryEnabled(library) && (effectiveLibraryFilter === "enabled" || library === effectiveLibraryFilter);
-
-    const libraryFilterLabel =
-        effectiveLibraryFilter === "enabled" ? "All enabled libraries" : effectiveLibraryFilter;
-
-    const filteredCollections = collections
-        .filter((col) => {
-            const matchesSearch = col.title.toLowerCase().includes(debouncedSearchQuery.toLowerCase());
-            const matchesLibrary = libraryMatches(col.library);
-            return matchesSearch && matchesLibrary;
-        })
-        .sort((a, b) => {
-            const comparison = a.title.localeCompare(b.title);
-            return sortOrder === "asc" ? comparison : -comparison;
-        });
-
-    // Group filtered collections by library for Plex theme section headers
-    const collectionsByLibrary = useMemo(() => {
-        const grouped: Record<string, Collection[]> = {};
-        for (const col of filteredCollections) {
-            if (!grouped[col.library]) grouped[col.library] = [];
-            grouped[col.library].push(col);
+    const body = () => {
+        if (!loadingLibraries && enabledLibraries.length === 0) {
+            return (
+                <div className="rounded-2xl border border-dashed border-slate-700/60 bg-slate-900/50 p-8 text-center text-slate-400">
+                    No libraries are enabled. Turn one on in Settings to work with its collections.
+                </div>
+            );
         }
-        return grouped;
-    }, [filteredCollections]);
-
-    const handleCollectionClick = (collection: Collection) => {
-        navigate(
-            `/collections/${encodeURIComponent(collection.library)}/${encodeURIComponent(collection.title)}`
+        if (error) {
+            return (
+                <div className="rounded-xl border border-red-900/60 bg-red-900/30 p-4 text-sm text-red-200">
+                    {error}
+                    <button onClick={() => loadOverview(true)} className="ml-3 underline">Try again</button>
+                </div>
+            );
+        }
+        if (!overview) {
+            return (
+                <div className="space-y-6">
+                    {Array.from({ length: 4 }).map((_, i) => (
+                        <div key={i} className="space-y-2 animate-pulse">
+                            <div className="h-5 w-64 rounded bg-slate-800/60" />
+                            <div className="flex gap-3">
+                                {Array.from({ length: 8 }).map((__, j) => <div key={j} className="w-28 aspect-[2/3] rounded-md bg-slate-800/60" />)}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            );
+        }
+        if (visible.length === 0) {
+            return (
+                <div className="rounded-2xl border border-dashed border-slate-700/60 bg-slate-900/50 p-8 text-center">
+                    <p className="text-slate-400">
+                        {all.length === 0
+                            ? `${library} has no collections yet`
+                            : filters.movie && movieTitles === null
+                              ? "Checking which collections contain that movie…"
+                              : `None of the ${all.length} collections in ${library} match these filters`}
+                    </p>
+                    {filtering && all.length > 0 ? (
+                        <button onClick={() => setFilters({ ...clearAllFilters(filters), scope: "all" })} className="mt-4 font-medium text-primary hover:text-primary/80">
+                            Clear all filters
+                        </button>
+                    ) : all.length === 0 ? (
+                        <button onClick={openCreateModal} className="mt-4 font-medium text-primary hover:text-primary/80">
+                            Create a collection
+                        </button>
+                    ) : null}
+                </div>
+            );
+        }
+        if (view === "rows") {
+            return (
+                <Incremental
+                    key={listKey}
+                    items={visible}
+                    pageSize={15}
+                    render={(items) => (
+                        <div className="space-y-8">
+                            {items.map((c) => <CollectionRow key={c.rating_key} collection={c} actions={actions} />)}
+                        </div>
+                    )}
+                />
+            );
+        }
+        if (view === "cards") {
+            return (
+                <Incremental
+                    key={listKey}
+                    items={visible}
+                    pageSize={60}
+                    render={(items) => (
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                            {items.map((c) => <CollectionCardView key={c.rating_key} collection={c} actions={actions} />)}
+                        </div>
+                    )}
+                />
+            );
+        }
+        return (
+            <Incremental
+                key={listKey}
+                items={visible}
+                pageSize={100}
+                render={(items) => (
+                    <div className="flex flex-col gap-1.5">
+                        {items.map((c) => <CollectionListItem key={c.rating_key} collection={c} actions={actions} />)}
+                    </div>
+                )}
+            />
         );
     };
 
-    const cacheAge = lastCacheCheck ? Math.floor((Date.now() - lastCacheCheck) / 1000) : null;
-    const cacheAgeText =
-        cacheAge !== null
-            ? cacheAge < 60
-                ? `${cacheAge}s ago`
-                : `${Math.floor(cacheAge / 60)}m ago`
-            : "";
-
-    if (loading && collections.length === 0) {
-        return (
-            <div className="space-y-6">
-                {/* Header Skeleton */}
-                <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-                    <div className="space-y-2">
-                        <div className="h-9 w-48 bg-slate-800/60 rounded-lg animate-pulse"></div>
-                        <div className="h-4 w-96 bg-slate-800/60 rounded animate-pulse"></div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                        <div className="h-10 w-40 bg-slate-800/60 rounded-lg animate-pulse"></div>
-                        <div className="h-10 w-32 bg-slate-800/60 rounded-lg animate-pulse"></div>
-                    </div>
-                </div>
-
-                {/* Search Bar Skeleton */}
-                <div className="flex items-center gap-3">
-                    <div className="h-10 flex-1 max-w-md bg-slate-800/60 rounded-lg animate-pulse"></div>
-                    <div className="h-10 w-36 bg-slate-800/60 rounded-lg animate-pulse"></div>
-                    <div className="h-10 w-10 bg-slate-800/60 rounded-lg animate-pulse"></div>
-                </div>
-
-                {/* Collections Grid Skeleton */}
-                <div>
-                    <div className="flex items-center justify-between mb-4">
-                        <div className="space-y-2">
-                            <div className="h-6 w-40 bg-slate-800/60 rounded animate-pulse"></div>
-                            <div className="h-4 w-28 bg-slate-800/60 rounded animate-pulse"></div>
-                        </div>
-                    </div>
-                    {viewMode === "list" ? (
-                        <div className="flex flex-col gap-1.5">
-                            {Array.from({ length: 12 }).map((_, i) => (
-                                <div key={i} className="flex items-center gap-4 rounded-xl border border-slate-800/60 bg-slate-900/50 px-4 py-2.5 animate-pulse">
-                                    <div className="h-10 w-10 rounded-lg bg-slate-800/60 shrink-0" />
-                                    <div className="h-4 bg-slate-800/60 rounded flex-1 max-w-[200px]" />
-                                    <div className="h-4 bg-slate-800/60 rounded w-16 hidden sm:block" />
-                                    <div className="h-4 bg-slate-800/60 rounded w-12" />
-                                </div>
-                            ))}
-                        </div>
-                    ) : (
-                        <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-                            {Array.from({ length: 18 }).map((_, i) => (
-                                <div key={i} className="rounded-xl overflow-hidden border border-slate-800/60 bg-slate-900/50 animate-pulse">
-                                    <div className="aspect-[2/3] bg-slate-800/60"></div>
-                                    <div className="p-3 space-y-2">
-                                        <div className="h-4 bg-slate-800/60 rounded w-3/4 mx-auto"></div>
-                                        <div className="h-3 bg-slate-800/60 rounded w-1/2 mx-auto"></div>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-                </div>
-            </div>
-        );
-    }
-
-
-    if (error) {
-        return (
-            <div className="p-8">
-                <div className="text-red-400">Error: {error}</div>
-                <button
-                    onClick={handleRefresh}
-                    className="mt-4 px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg transition-colors"
-                >
-                    Retry
-                </button>
-            </div>
-        );
-    }
-
     return (
-        <div className="space-y-6">
-            {/* Header */}
-            <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-                <div className="space-y-1">
+        <div className="space-y-5">
+            {/* Header: which library you're working in */}
+            <div className="flex flex-wrap items-center justify-between gap-4">
+                <div className="flex flex-wrap items-center gap-3">
                     <h1 className="text-3xl font-black tracking-tight text-white">Collections</h1>
-                    <p className="text-slate-400 text-sm max-w-2xl">
-                        Browse and manage your Plex collections. Create new collections, edit metadata, and organize your media.
-                    </p>
+                    <Listbox value={library} onChange={switchLibrary} disabled={loadingLibraries}>
+                        <div className="relative">
+                            <Listbox.Button className={`${control} min-w-[12rem] text-base font-semibold`}>
+                                <span className="flex-1 text-left truncate">{loadingLibraries ? "Loading libraries…" : library || "Choose a library"}</span>
+                                <ChevronDown className="h-4 w-4 text-slate-400" />
+                            </Listbox.Button>
+                            <Listbox.Options className="absolute left-0 z-30 mt-1 w-64 max-h-80 overflow-auto rounded-lg border border-slate-700 bg-slate-800 py-1 shadow-lg focus:outline-none">
+                                {availableLibraries.map((lib) => (
+                                    <Listbox.Option
+                                        key={lib.title}
+                                        value={lib.title}
+                                        disabled={!lib.enabled}
+                                        className={`flex items-center justify-between gap-2 px-3 py-2 text-sm ${
+                                            lib.enabled
+                                                ? "cursor-pointer text-white hover:bg-slate-700 data-[selected]:bg-primary data-[selected]:font-semibold"
+                                                : "cursor-not-allowed text-slate-500"
+                                        }`}
+                                    >
+                                        {({ selected }) => (
+                                            <>
+                                                <span className="truncate">{lib.title}</span>
+                                                {lib.enabled ? (
+                                                    selected && <Check className="h-4 w-4" />
+                                                ) : (
+                                                    <span className="text-[10px] uppercase tracking-wide">not enabled</span>
+                                                )}
+                                            </>
+                                        )}
+                                    </Listbox.Option>
+                                ))}
+                            </Listbox.Options>
+                        </div>
+                    </Listbox>
                 </div>
-
-                <div className="flex items-center gap-3">
-                    {/* Create Collection Button */}
-                    <button
-                        onClick={() => setShowCreateModal(true)}
-                        className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary-hover text-white text-sm font-bold shadow-lg shadow-primary/30 hover:shadow-primary/40 transition-all duration-200 active:scale-95"
-                    >
-                        <Plus size={18} />
-                        Create Collection
+                <div className="flex items-center gap-2">
+                    <button onClick={() => loadOverview(true)} disabled={loading || !library} className={`${control} disabled:opacity-50`} title="Reload collections from Plex">
+                        <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+                        <span className="hidden sm:inline">Refresh</span>
                     </button>
-
-                    {/* Refresh Button */}
                     <button
-                        onClick={handleRefresh}
-                        disabled={loading}
-                        className="flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-700 bg-slate-900 text-slate-300 text-sm font-medium hover:bg-slate-800 hover:border-slate-600 transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="Refresh collections"
+                        onClick={openCreateModal}
+                        disabled={!library}
+                        className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-bold text-white shadow-lg shadow-primary/30 hover:bg-primary-hover disabled:opacity-50"
                     >
-                        <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
-                        <span className="text-sm">
-                            {loading ? "Refreshing..." : cacheAgeText ? `Updated ${cacheAgeText}` : "Refresh"}
-                        </span>
+                        <Plus size={18} /> Create Collection
                     </button>
                 </div>
             </div>
 
-            {/* Search and Filter Bar */}
-            <div className="flex items-center gap-3">
-                <div className="relative flex-1 max-w-md">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
-                    <input
-                        type="text"
-                        placeholder="Search collections..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className={`w-full pl-10 pr-4 py-2 rounded-lg text-white placeholder-slate-500 focus:outline-none transition-colors ${
-                            isPlex
-                                ? "bg-slate-800/50 border border-slate-700/40 focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
-                                : "bg-slate-900 border border-slate-700 focus:ring-2 focus:ring-primary/70"
+            {/* All / In Rotation / Pinned */}
+            <div className="inline-flex rounded-lg border border-slate-700 bg-slate-900 p-0.5">
+                {SCOPES.map((s) => (
+                    <button
+                        key={s.key}
+                        type="button"
+                        onClick={() => setFilters({ ...filters, scope: s.key })}
+                        className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
+                            filters.scope === s.key ? "bg-primary text-white" : "text-slate-400 hover:text-slate-200"
                         }`}
+                    >
+                        {s.label}
+                    </button>
+                ))}
+            </div>
+
+            {/* Search, sort, filters, view */}
+            <div className="flex flex-wrap items-center gap-2">
+                <div className="relative flex-1 min-w-[14rem] max-w-md">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                    <input
+                        ref={searchRef}
+                        type="search"
+                        value={filters.q}
+                        onChange={(e) => setFilters({ ...filters, q: e.target.value })}
+                        placeholder="Search title or sort title  ( / )"
+                        className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 pl-9 pr-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-primary/70"
                     />
                 </div>
 
-                {/* Library Filter Dropdown */}
-                <Listbox value={effectiveLibraryFilter} onChange={setSelectedLibraryFilter}>
-                    <div className="relative">
-                        <Listbox.Button className="flex items-center gap-2 px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/70 transition-colors min-w-[140px]">
-                            <span className="flex-1 text-left text-sm">
-                                {libraryFilterLabel}
-                            </span>
-                            <ChevronDown className="h-4 w-4 text-slate-400" />
-                        </Listbox.Button>
-                        <Listbox.Options className="absolute right-0 z-10 mt-1 w-60 rounded-lg border border-slate-700 bg-slate-800 py-1 shadow-lg focus:outline-none max-h-72 overflow-auto">
-                            {[
-                                { value: "enabled", label: "All enabled libraries", enabled: true },
-                                ...uniqueLibraries.map((library) => ({
-                                    value: library,
-                                    label: library,
-                                    enabled: isLibraryEnabled(library),
-                                })),
-                            ].map((opt, i) => (
-                                <Listbox.Option
-                                    key={opt.value}
-                                    value={opt.value}
-                                    disabled={!opt.enabled}
-                                    className={`px-3 py-2 text-sm flex items-center justify-between gap-2 ${
-                                        opt.enabled
-                                            ? "cursor-pointer text-white hover:bg-slate-700 data-[selected]:bg-primary data-[selected]:font-semibold"
-                                            : "cursor-not-allowed text-slate-500"
-                                    } ${i === 0 ? "border-b border-slate-700 mb-1" : ""}`}
-                                >
-                                    {({ selected }) => (
-                                        <>
-                                            <span className="truncate">{opt.label}</span>
-                                            <span className="flex items-center gap-1.5 shrink-0">
-                                                {!opt.enabled && (
-                                                    <span className="text-[10px] uppercase tracking-wide text-slate-500">not enabled</span>
-                                                )}
-                                                {selected && <Check className="h-4 w-4 text-white" />}
-                                            </span>
-                                        </>
-                                    )}
-                                </Listbox.Option>
-                            ))}
-                        </Listbox.Options>
-                    </div>
-                </Listbox>
-
-                {/* Sort Order Toggle */}
+                <label className="flex items-center gap-2 text-sm text-slate-400">
+                    Sort by
+                    <select
+                        value={filters.sort}
+                        onChange={(e) => setFilters({ ...filters, sort: e.target.value as CollectionFilters["sort"] })}
+                        className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary/70"
+                        title={filters.sort === "total_plays" ? TOTAL_PLAYS_HINT : undefined}
+                    >
+                        {SORTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+                    </select>
+                </label>
                 <button
-                    onClick={() => setSortOrder(sortOrder === "asc" ? "desc" : "asc")}
-                    className="flex items-center gap-2 px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/70 transition-colors"
-                    title={sortOrder === "asc" ? "Sort Z-A" : "Sort A-Z"}
+                    type="button"
+                    onClick={() => setFilters({ ...filters, dir: filters.dir === "asc" ? "desc" : "asc" })}
+                    className={control}
+                    title={filters.dir === "asc" ? "Ascending: click for descending" : "Descending: click for ascending"}
                 >
-                    {sortOrder === "asc" ? (
-                        <ArrowUpAZ className="h-5 w-5" />
-                    ) : (
-                        <ArrowDownAZ className="h-5 w-5" />
+                    {filters.dir === "asc" ? <ArrowUpAZ className="h-5 w-5" /> : <ArrowDownAZ className="h-5 w-5" />}
+                </button>
+
+                <button
+                    type="button"
+                    onClick={() => setFilterPanelOpen(true)}
+                    disabled={!overview}
+                    className={`${control} ${panelFilterCount ? "border-primary bg-primary/15 text-primary hover:bg-primary/25" : ""}`}
+                >
+                    <Filter className="h-4 w-4" />
+                    Filters
+                    {panelFilterCount > 0 && (
+                        <span className="rounded-full bg-primary px-1.5 text-xs font-bold text-white">{panelFilterCount}</span>
                     )}
                 </button>
 
-                {/* View Mode Toggle */}
-                <div className="inline-flex rounded-lg border border-slate-700 bg-slate-900 p-0.5">
-                    <button
-                        type="button"
-                        onClick={() => handleViewModeChange("cards")}
-                        className={`inline-flex items-center justify-center rounded-md p-1.5 transition-all duration-200 ${
-                            viewMode === "cards"
-                                ? "bg-primary/20 text-primary"
-                                : "text-slate-400 hover:text-slate-200"
-                        }`}
-                        title="Card view"
-                    >
-                        <LayoutGrid className="h-4 w-4" />
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => handleViewModeChange("list")}
-                        className={`inline-flex items-center justify-center rounded-md p-1.5 transition-all duration-200 ${
-                            viewMode === "list"
-                                ? "bg-primary/20 text-primary"
-                                : "text-slate-400 hover:text-slate-200"
-                        }`}
-                        title="List view"
-                    >
-                        <List className="h-4 w-4" />
-                    </button>
+                <div className="ml-auto inline-flex rounded-lg border border-slate-700 bg-slate-900 p-0.5">
+                    {([
+                        { key: "rows", icon: Rows3, label: "Rows" },
+                        { key: "cards", icon: LayoutGrid, label: "Cards" },
+                        { key: "list", icon: List, label: "Compact list" },
+                    ] as const).map((v) => (
+                        <button
+                            key={v.key}
+                            type="button"
+                            onClick={() => changeView(v.key)}
+                            title={`${v.label} view`}
+                            className={`rounded-md p-1.5 transition-colors ${view === v.key ? "bg-primary/20 text-primary" : "text-slate-400 hover:text-slate-200"}`}
+                        >
+                            <v.icon className="h-4 w-4" />
+                        </button>
+                    ))}
                 </div>
             </div>
 
-            {/* Collections */}
-            <div>
-                {filteredCollections.length === 0 ? (
-                    <div className="rounded-2xl border border-dashed border-slate-700/60 bg-slate-900/50 p-8 text-center">
-                        <p className="text-slate-400">
-                            {searchQuery
-                                ? "No collections found matching your search"
-                                : enabledLibraries && enabledLibraries.length === 0
-                                  ? "No libraries are enabled. Turn one on in Settings."
-                                  : effectiveLibraryFilter === "enabled"
-                                    ? "Your enabled libraries have no collections yet"
-                                    : `${effectiveLibraryFilter} has no collections yet`}
-                        </p>
-                        <button
-                            onClick={() => setShowCreateModal(true)}
-                            className="mt-4 text-primary hover:text-primary/80 font-medium transition-colors"
-                        >
-                            Create your first collection
+            {/* Count, and which filters are on */}
+            <div className={`flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 ${filtering ? "border border-primary/40 bg-primary/10" : ""}`}>
+                <span className="text-sm font-semibold text-white">
+                    {overview ? `${visible.length} of ${all.length} collections` : "Loading collections…"}
+                </span>
+                {filtering && (
+                    <span className="rounded-full bg-primary px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Filtered</span>
+                )}
+                {filters.scope !== "all" && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-slate-600 bg-slate-800 px-2.5 py-1 text-xs text-slate-200">
+                        {SCOPES.find((s) => s.key === filters.scope)?.label}
+                        <button onClick={() => setFilters({ ...filters, scope: "all" })} aria-label="Show all collections" className="text-slate-400 hover:text-white">
+                            <X className="h-3 w-3" />
                         </button>
-                    </div>
-                ) : viewMode === "list" ? (
-                    <div className="flex flex-col gap-1.5">
-                        {filteredCollections.map((collection) => (
-                            <div
-                                key={`${collection.library}-${collection.title}`}
-                                role="button"
-                                tabIndex={0}
-                                onClick={() => handleCollectionClick(collection)}
-                                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleCollectionClick(collection); } }}
-                                className="group flex items-center gap-4 rounded-xl border border-slate-800/60 bg-slate-900/50 px-4 py-2.5 hover:border-slate-700 hover:bg-slate-900/80 transition-all duration-200 cursor-pointer"
-                            >
-                                {/* Square Thumbnail */}
-                                <div className="h-10 w-10 rounded-lg overflow-hidden bg-slate-800 shrink-0">
-                                    {collection.poster_url ? (
-                                        <img
-                                            src={collection.poster_url}
-                                            alt={collection.title}
-                                            className="w-full h-full object-cover"
-                                            loading="lazy"
-                                        />
-                                    ) : (
-                                        <div className="w-full h-full flex items-center justify-center text-slate-600">
-                                            <Image size={16} />
-                                        </div>
-                                    )}
-                                </div>
-
-                                {/* Title + Active Indicator */}
-                                <div className="flex items-center gap-2 flex-1 min-w-0">
-                                    <span className="text-sm font-semibold text-white truncate">
-                                        {collection.title}
-                                    </span>
-                                    {collection.is_active && (
-                                        <span className="h-2 w-2 rounded-full bg-emerald-400 shrink-0" title="Active" />
-                                    )}
-                                </div>
-
-                                {/* Library Badge */}
-                                <span className="hidden sm:inline-flex rounded-full bg-slate-800 px-2.5 py-0.5 text-xs text-slate-400 border border-slate-700/50 shrink-0">
-                                    {collection.library}
-                                </span>
-
-                                {/* Item Count */}
-                                <span className="text-xs text-slate-500 shrink-0">
-                                    {collection.item_count} items
-                                </span>
-
-                                {/* Action Buttons */}
-                                <div className="flex items-center gap-1.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
-                                    <button
-                                        onClick={(e) => openQuickEditModal(collection, e)}
-                                        className="p-1.5 rounded-lg bg-slate-800/70 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
-                                        title="Edit collection"
-                                    >
-                                        <Edit size={14} />
-                                    </button>
-
-                                    <PinPopover
-                                        isPinned={pinnedCollections.has(collection.title)}
-                                        isPinning={pinningCollection === collection.title}
-                                        onPinWithVisibility={(visibility) => handlePinWithVisibility(collection, visibility)}
-                                        onUnpin={() => handleUnpin(collection)}
-                                    />
-
-                                    <button
-                                        onClick={(e) => handleDeleteCollection(collection.library, collection.title, e)}
-                                        className="p-1.5 rounded-lg bg-red-600/50 hover:bg-red-600/70 text-red-200 hover:text-white transition-colors"
-                                        title="Delete collection"
-                                    >
-                                        <Trash2 size={14} />
-                                    </button>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                ) : (
-                    <div className="space-y-8">
-                        {Object.entries(collectionsByLibrary).map(([library, cols]) => (
-                            <div key={library}>
-                                <div className="flex items-center gap-3 mb-4">
-                                    <h4 className="text-lg font-bold text-white tracking-tight">{library}</h4>
-                                    <div className="flex-1 h-px bg-slate-700/50" />
-                                    <span className="text-xs text-slate-500">{cols.length} collection{cols.length !== 1 ? 's' : ''}</span>
-                                </div>
-                                <div className={`grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 ${isPlex ? "gap-3" : "gap-4"}`}>
-                                    {cols.map((collection, index) => (
-                                        <CollectionCard
-                                            key={`${collection.library}-${collection.title}`}
-                                            collection={collection}
-                                            index={index}
-                                            isPinned={pinnedCollections.has(collection.title)}
-                                            isPinning={pinningCollection === collection.title}
-                                            onPinWithVisibility={(visibility) => handlePinWithVisibility(collection, visibility)}
-                                            onUnpin={() => handleUnpin(collection)}
-                                            onClick={() => handleCollectionClick(collection)}
-                                            onEdit={(e) => openQuickEditModal(collection, e)}
-                                            onDelete={(e) => handleDeleteCollection(collection.library, collection.title, e)}
-                                            isPlex={isPlex}
-                                        />
-                                    ))}
-                                </div>
-                            </div>
-                        ))}
-                    </div>
+                    </span>
+                )}
+                {chips.map((chip) => (
+                    <span key={chip.key} className="inline-flex items-center gap-1 rounded-full border border-slate-600 bg-slate-800 px-2.5 py-1 text-xs text-slate-200">
+                        {chip.label}
+                        <button onClick={() => setFilters(clearFilter(filters, chip.key))} aria-label={`Remove filter: ${chip.label}`} className="text-slate-400 hover:text-white">
+                            <X className="h-3 w-3" />
+                        </button>
+                    </span>
+                ))}
+                {filtering && (
+                    <button onClick={() => setFilters({ ...clearAllFilters(filters), scope: "all" })} className="ml-auto text-xs font-medium text-primary hover:text-primary/80">
+                        Clear all
+                    </button>
                 )}
             </div>
+
+            {body()}
+
+            {overview && (
+                <CollectionFilterPanel
+                    open={filterPanelOpen}
+                    onOpenChange={setFilterPanelOpen}
+                    library={library}
+                    filters={filters}
+                    onChange={setFilters}
+                    groups={overview.groups}
+                    labels={overview.labels}
+                    matchingCount={visible.length}
+                    totalCount={all.length}
+                />
+            )}
 
             {/* Quick Edit Modal */}
             <Dialog open={showQuickEditModal && editingCollection !== null} onOpenChange={(isOpen) => !isOpen && closeQuickEditModal()}>

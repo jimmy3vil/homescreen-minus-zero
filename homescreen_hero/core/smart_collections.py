@@ -194,3 +194,101 @@ def create_smart_collection(server, section, title: str, query: SmartQuery):
         "sectionId": section.key,
     }
     return server.query(f"/library/collections{utils.joinArgs(args)}", method=server._session.post)
+
+
+def parse_smart_content(content: str) -> Dict[str, Any]:
+    # Read the search URL Plex stores on a smart collection back into
+    # {libtype_id, match, rules[{field, operator, value}], sort, limit}.
+    # Nested groups beyond a single all/any level are flattened, with match
+    # taken from the outermost group.
+    from urllib.parse import unquote
+
+    query = content.split("?", 1)[1] if "?" in content else ""
+    result: Dict[str, Any] = {"type": None, "match": "all", "rules": [], "sort": None, "limit": None}
+    depth = 0
+    for part in query.split("&"):
+        if not part:
+            continue
+        m = re.match(r"^([A-Za-z0-9.]+)([!<>]*)=(=?)(.*)$", part)
+        if not m:
+            continue
+        key, prefix_ops, extra_eq, value = m.groups()
+        value = unquote(value)
+        if key == "type":
+            result["type"] = value
+        elif key == "sort":
+            result["sort"] = value
+        elif key == "limit":
+            result["limit"] = int(value) if value.isdigit() else None
+        elif key == "push":
+            depth += 1
+        elif key == "pop":
+            depth = max(0, depth - 1)
+        elif key == "or":
+            if depth <= 1:
+                result["match"] = "any"
+        elif key == "and":
+            continue
+        elif key in {"includeGuids", "includeExternalMedia", "group", "having"}:
+            continue
+        else:
+            result["rules"].append({"field": key, "operator": f"{prefix_ops}={extra_eq}", "value": value})
+    return result
+
+
+def describe_smart_collection(section, content: str) -> Dict[str, Any]:
+    # Plain-language version of a smart collection's rules, e.g.
+    # "Genre is Horror", "Date Added is after 30 days ago".
+    from datetime import datetime, timezone
+
+    parsed = parse_smart_content(content)
+    type_by_id = {str(utils.searchType(t["key"])): t["key"] for t in LIBTYPES.get(section.type, [])}
+    libtype = type_by_id.get(str(parsed["type"])) or default_libtype(section)
+
+    fields = {f.key: f for f in section.listFields(libtype)}
+    choice_fields = {f.filter for f in section.listFilters(libtype)}
+    choice_titles: Dict[str, Dict[str, str]] = {}
+    op_titles: Dict[str, Dict[str, str]] = {}
+
+    lines = []
+    for rule in parsed["rules"]:
+        f = fields.get(rule["field"])
+        if f is None:
+            lines.append(f"{rule['field']} {rule['operator']} {rule['value']}")
+            continue
+        if f.type not in op_titles:
+            op_titles[f.type] = {o.key: o.title for o in section.listOperators(f.type)}
+        op = op_titles[f.type].get(rule["operator"], rule["operator"])
+        value = rule["value"]
+        short = f.key.split(".")[-1]
+        if short in choice_fields:
+            if short not in choice_titles:
+                try:
+                    choice_titles[short] = {str(c.key): c.title for c in section.listFilterChoices(short, libtype)}
+                except Exception:
+                    choice_titles[short] = {}
+            value = ", ".join(choice_titles[short].get(v, v) for v in value.split(","))
+        elif f.type == "date":
+            rel = re.fullmatch(r"-?(\d+)([dwmy])", value)
+            if rel:
+                unit = {"d": "days", "w": "weeks", "m": "months", "y": "years"}[rel.group(2)]
+                value = f"{rel.group(1)} {unit} ago"
+            elif value.isdigit():
+                value = datetime.fromtimestamp(int(value), tz=timezone.utc).strftime("%Y-%m-%d")
+        elif f.type == "boolean":
+            value = "true" if value == "1" else "false"
+        lines.append(f"{f.title} {op} {value}")
+
+    sort_text = None
+    if parsed["sort"]:
+        base, _, direction = parsed["sort"].partition(":")
+        sorts = {s.key: s.title for s in section.listSorts(libtype)}
+        sort_text = f"{sorts.get(base, base)}{' (descending)' if direction == 'desc' else ''}"
+
+    return {
+        "libtype": libtype,
+        "match": parsed["match"],
+        "rules": lines,
+        "sort": sort_text,
+        "limit": parsed["limit"],
+    }
