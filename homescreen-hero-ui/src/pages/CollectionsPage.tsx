@@ -308,7 +308,24 @@ export default function CollectionsPage() {
     const [error, setError] = useState<string | null>(null);
     const [searchQuery, setSearchQuery] = useState("");
     const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
-    const [selectedLibraryFilter, setSelectedLibraryFilter] = useState<string>("all");
+    // "enabled" = libraries switched on in Settings, "all" = every Plex library,
+    // otherwise a single library name.
+    const [selectedLibraryFilter, setSelectedLibraryFilterState] = useState<string>(() => {
+        try {
+            return localStorage.getItem("collectionsLibraryFilter") || "enabled";
+        } catch {
+            return "enabled";
+        }
+    });
+    const setSelectedLibraryFilter = (value: string) => {
+        setSelectedLibraryFilterState(value);
+        try {
+            localStorage.setItem("collectionsLibraryFilter", value);
+        } catch {
+            // Storage unavailable; the filter just won't be remembered.
+        }
+    };
+    const [enabledLibraries, setEnabledLibraries] = useState<string[] | null>(null);
     const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
     const [viewMode, setViewMode] = useState<ViewMode>(
         () => (localStorage.getItem("collectionsViewMode") as ViewMode) || "cards"
@@ -356,6 +373,14 @@ export default function CollectionsPage() {
     useEffect(() => {
         loadCollections();
         loadPinnedCollections();
+        loadAvailableLibraries();
+        fetchWithAuth("/api/admin/config/plex")
+            .then((r) => r.json())
+            .then((data) => {
+                const libs: { name: string; enabled: boolean }[] = data.libraries ?? [];
+                setEnabledLibraries(libs.filter((l) => l.enabled).map((l) => l.name));
+            })
+            .catch((e) => console.error("Failed to load enabled libraries:", e));
     }, []);
 
     // Debounce collections search
@@ -832,13 +857,33 @@ export default function CollectionsPage() {
         }
     };
 
-    // Get unique libraries from collections
-    const uniqueLibraries = Array.from(new Set(collections.map((col) => col.library))).sort();
+    // Every Plex library, including ones with no collections yet; enabled ones first.
+    const uniqueLibraries = Array.from(
+        new Set([...availableLibraries.map((lib) => lib.title), ...collections.map((col) => col.library)])
+    ).sort((a, b) => {
+        const ea = enabledLibraries?.includes(a) ? 0 : 1;
+        const eb = enabledLibraries?.includes(b) ? 0 : 1;
+        return ea - eb || a.localeCompare(b);
+    });
+
+    const libraryMatches = (library: string) => {
+        if (selectedLibraryFilter === "all") return true;
+        // Until we know which libraries are enabled, show everything.
+        if (selectedLibraryFilter === "enabled") return !enabledLibraries || enabledLibraries.includes(library);
+        return library === selectedLibraryFilter;
+    };
+
+    const libraryFilterLabel =
+        selectedLibraryFilter === "enabled"
+            ? "Enabled libraries"
+            : selectedLibraryFilter === "all"
+              ? "All libraries"
+              : selectedLibraryFilter;
 
     const filteredCollections = collections
         .filter((col) => {
             const matchesSearch = col.title.toLowerCase().includes(debouncedSearchQuery.toLowerCase());
-            const matchesLibrary = selectedLibraryFilter === "all" || col.library === selectedLibraryFilter;
+            const matchesLibrary = libraryMatches(col.library);
             return matchesSearch && matchesLibrary;
         })
         .sort((a, b) => {
@@ -1002,22 +1047,29 @@ export default function CollectionsPage() {
                     <div className="relative">
                         <Listbox.Button className="flex items-center gap-2 px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/70 transition-colors min-w-[140px]">
                             <span className="flex-1 text-left text-sm">
-                                {selectedLibraryFilter === "all" ? "All Libraries" : selectedLibraryFilter}
+                                {libraryFilterLabel}
                             </span>
                             <ChevronDown className="h-4 w-4 text-slate-400" />
                         </Listbox.Button>
-                        <Listbox.Options className="absolute right-0 z-10 mt-1 w-48 rounded-lg border border-slate-700 bg-slate-800 py-1 shadow-lg focus:outline-none max-h-60 overflow-auto">
-                            <Listbox.Option
-                                value="all"
-                                className="cursor-pointer px-3 py-2 text-sm text-white hover:bg-slate-700 data-[selected]:bg-primary data-[selected]:font-semibold flex items-center justify-between"
-                            >
-                                {({ selected }) => (
-                                    <>
-                                        <span>All Libraries</span>
-                                        {selected && <Check className="h-4 w-4 text-white" />}
-                                    </>
-                                )}
-                            </Listbox.Option>
+                        <Listbox.Options className="absolute right-0 z-10 mt-1 w-60 rounded-lg border border-slate-700 bg-slate-800 py-1 shadow-lg focus:outline-none max-h-72 overflow-auto">
+                            {[
+                                { value: "enabled", label: "Enabled libraries" },
+                                { value: "all", label: "All libraries" },
+                            ].map((opt) => (
+                                <Listbox.Option
+                                    key={opt.value}
+                                    value={opt.value}
+                                    className="cursor-pointer px-3 py-2 text-sm text-white hover:bg-slate-700 data-[selected]:bg-primary data-[selected]:font-semibold flex items-center justify-between"
+                                >
+                                    {({ selected }) => (
+                                        <>
+                                            <span>{opt.label}</span>
+                                            {selected && <Check className="h-4 w-4 text-white" />}
+                                        </>
+                                    )}
+                                </Listbox.Option>
+                            ))}
+                            <div className="my-1 h-px bg-slate-700" />
                             {uniqueLibraries.map((library) => (
                                 <Listbox.Option
                                     key={library}
@@ -1026,8 +1078,13 @@ export default function CollectionsPage() {
                                 >
                                     {({ selected }) => (
                                         <>
-                                            <span>{library}</span>
-                                            {selected && <Check className="h-4 w-4 text-white" />}
+                                            <span className="truncate">{library}</span>
+                                            <span className="flex items-center gap-1.5 shrink-0">
+                                                {enabledLibraries?.includes(library) && (
+                                                    <span className="text-[10px] uppercase tracking-wide text-emerald-400">enabled</span>
+                                                )}
+                                                {selected && <Check className="h-4 w-4 text-white" />}
+                                            </span>
                                         </>
                                     )}
                                 </Listbox.Option>
@@ -1083,7 +1140,11 @@ export default function CollectionsPage() {
                 {filteredCollections.length === 0 ? (
                     <div className="rounded-2xl border border-dashed border-slate-700/60 bg-slate-900/50 p-8 text-center">
                         <p className="text-slate-400">
-                            {searchQuery ? "No collections found matching your search" : "No collections found"}
+                            {searchQuery
+                                ? "No collections found matching your search"
+                                : selectedLibraryFilter === "enabled" || selectedLibraryFilter === "all"
+                                  ? `No collections found in ${libraryFilterLabel.toLowerCase()}`
+                                  : `${selectedLibraryFilter} has no collections yet`}
                         </p>
                         <button
                             onClick={() => setShowCreateModal(true)}

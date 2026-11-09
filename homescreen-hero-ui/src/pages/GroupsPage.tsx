@@ -190,6 +190,14 @@ export default function GroupsPage() {
     const [renaming, setRenaming] = useState<RenameState>(null);
     const [processingIndex, setProcessingIndex] = useState<number | null>(null);
     const [searchTerm, setSearchTerm] = useState("");
+    const [libraryFilter, setLibraryFilter] = useState<string>(() => {
+        try {
+            return localStorage.getItem("groupsLibraryFilter") || "all";
+        } catch {
+            return "all";
+        }
+    });
+    const [groupLibraries, setGroupLibraries] = useState<Record<string, string[]> | null>(null);
     const [viewMode, setViewMode] = useState<ViewMode>(
         () => (localStorage.getItem("groupsViewMode") as ViewMode) || "cards"
     );
@@ -259,6 +267,24 @@ export default function GroupsPage() {
             setLibraries(data.libraries ?? []);
         } catch (e) {
             console.error("Failed to fetch libraries:", e);
+        }
+    };
+
+    const fetchGroupLibraries = async () => {
+        try {
+            const r = await fetchWithAuth("/api/admin/config/groups/libraries");
+            if (r.ok) setGroupLibraries(await r.json());
+        } catch (e) {
+            console.error("Failed to fetch group libraries:", e);
+        }
+    };
+
+    const handleLibraryFilterChange = (value: string) => {
+        setLibraryFilter(value);
+        try {
+            localStorage.setItem("groupsLibraryFilter", value);
+        } catch {
+            // Storage unavailable; the filter just won't be remembered.
         }
     };
 
@@ -445,6 +471,7 @@ export default function GroupsPage() {
         refreshGroups();
         fetchRotationSettings();
         fetchLibraries();
+        fetchGroupLibraries();
         fetchDisplaySettings();
         fetchGroupLastRotated();
     }, []);
@@ -458,11 +485,29 @@ export default function GroupsPage() {
         return () => { clearTimeout(fadeTimer); clearTimeout(clearTimer); };
     }, [message]);
 
+    const isFiltering = searchTerm.trim() !== "" || libraryFilter !== "all";
+
     const filteredGroups = useMemo(() => {
-        return sortedGroups.filter((group) =>
-            group.name.toLowerCase().includes(searchTerm.toLowerCase().trim())
-        );
-    }, [sortedGroups, searchTerm]);
+        const term = searchTerm.toLowerCase().trim();
+        return sortedGroups.filter((group) => {
+            if (!group.name.toLowerCase().includes(term)) return false;
+            if (libraryFilter === "all") return true;
+            // Until group libraries have loaded, don't hide anything.
+            if (!groupLibraries) return true;
+            const libs = groupLibraries[group.name] ?? [];
+            if (libraryFilter === "none") return libs.length === 0;
+            return libs.includes(libraryFilter);
+        });
+    }, [sortedGroups, searchTerm, libraryFilter, groupLibraries]);
+
+    // Libraries offered in the filter: enabled ones first, then any other
+    // library a group draws from.
+    const libraryFilterOptions = useMemo(() => {
+        const enabled = libraries.filter((l) => l.enabled).map((l) => l.name);
+        const fromGroups = new Set(Object.values(groupLibraries ?? {}).flat());
+        const others = [...fromGroups].filter((l) => !enabled.includes(l)).sort();
+        return { enabled, others };
+    }, [libraries, groupLibraries]);
 
     const handleRename = async () => {
         if (!renaming) return;
@@ -770,6 +815,44 @@ export default function GroupsPage() {
                                     <List className="h-4 w-4" />
                                 </button>
                             </div>
+                            <Listbox value={libraryFilter} onChange={handleLibraryFilterChange}>
+                                <div className="relative">
+                                    <Listbox.Button className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/70 transition-colors min-w-[160px]">
+                                        <span className="flex-1 text-left truncate">
+                                            {libraryFilter === "all"
+                                                ? "All libraries"
+                                                : libraryFilter === "none"
+                                                  ? "No library found"
+                                                  : libraryFilter}
+                                        </span>
+                                        <ChevronDown className="h-4 w-4 text-slate-400" />
+                                    </Listbox.Button>
+                                    <Listbox.Options className="absolute right-0 z-20 mt-1 w-60 max-h-72 overflow-auto rounded-lg border border-slate-700 bg-slate-800 py-1 shadow-lg focus:outline-none">
+                                        {[
+                                            { value: "all", label: "All libraries", hint: "" },
+                                            ...libraryFilterOptions.enabled.map((l) => ({ value: l, label: l, hint: "enabled" })),
+                                            ...libraryFilterOptions.others.map((l) => ({ value: l, label: l, hint: "" })),
+                                            { value: "none", label: "No library found", hint: "" },
+                                        ].map((opt) => (
+                                            <Listbox.Option
+                                                key={opt.value}
+                                                value={opt.value}
+                                                className="cursor-pointer px-3 py-2 text-sm text-white hover:bg-slate-700 data-[selected]:bg-primary data-[selected]:font-semibold flex items-center justify-between gap-2"
+                                            >
+                                                {({ selected }) => (
+                                                    <>
+                                                        <span className="truncate">{opt.label}</span>
+                                                        <span className="flex items-center gap-1.5 shrink-0">
+                                                            {opt.hint && <span className="text-[10px] uppercase tracking-wide text-emerald-400">{opt.hint}</span>}
+                                                            {selected && <Check className="h-4 w-4 text-white" />}
+                                                        </span>
+                                                    </>
+                                                )}
+                                            </Listbox.Option>
+                                        ))}
+                                    </Listbox.Options>
+                                </div>
+                            </Listbox>
                             <div className="relative">
                                 <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
                                 <input
@@ -887,7 +970,7 @@ export default function GroupsPage() {
                                             </SortableGroupCard>
                                         );
                                     })}
-                                    {!searchTerm && (
+                                    {!isFiltering && (
                                         <div
                                             onClick={() => setShowTypePicker(true)}
                                             className="group flex items-center gap-3 rounded-xl border-2 border-dashed border-slate-700/50 hover:border-primary/40 hover:bg-slate-800/30 px-4 py-3 ml-8 transition-all duration-300 cursor-pointer"
@@ -1010,7 +1093,7 @@ export default function GroupsPage() {
                                             </SortableGroupCard>
                                         );
                                     })}
-                                    {!searchTerm && (
+                                    {!isFiltering && (
                                         <div
                                             onClick={() => setShowTypePicker(true)}
                                             className="group flex flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-slate-700/50 hover:border-primary/40 hover:bg-slate-800/30 transition-all duration-300 cursor-pointer"
@@ -1029,7 +1112,7 @@ export default function GroupsPage() {
                             )}
                         </SortableContext>
                     </DndContext>
-                ) : !searchTerm ? (
+                ) : !isFiltering ? (
                     viewMode === "list" ? (
                         <div
                             onClick={() => setShowTypePicker(true)}
@@ -1063,7 +1146,7 @@ export default function GroupsPage() {
                         <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-slate-900">
                             <SlidersHorizontal className="h-4 w-4 text-slate-400" />
                         </div>
-                        <p className="mt-3 text-sm text-slate-300">No groups match your search.</p>
+                        <p className="mt-3 text-sm text-slate-300">No groups match your filters.</p>
                     </div>
                 )}
                 </div>
