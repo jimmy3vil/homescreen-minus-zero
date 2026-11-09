@@ -198,6 +198,7 @@ export default function GroupsPage() {
         }
     });
     const [groupLibraries, setGroupLibraries] = useState<Record<string, string[]> | null>(null);
+    const [librariesLoaded, setLibrariesLoaded] = useState(false);
     const [viewMode, setViewMode] = useState<ViewMode>(
         () => (localStorage.getItem("groupsViewMode") as ViewMode) || "cards"
     );
@@ -267,15 +268,18 @@ export default function GroupsPage() {
             setLibraries(data.libraries ?? []);
         } catch (e) {
             console.error("Failed to fetch libraries:", e);
+        } finally {
+            setLibrariesLoaded(true);
         }
     };
 
     const fetchGroupLibraries = async () => {
         try {
             const r = await fetchWithAuth("/api/admin/config/groups/libraries");
-            if (r.ok) setGroupLibraries(await r.json());
+            setGroupLibraries(r.ok ? await r.json() : {});
         } catch (e) {
             console.error("Failed to fetch group libraries:", e);
+            setGroupLibraries({});
         }
     };
 
@@ -485,29 +489,59 @@ export default function GroupsPage() {
         return () => { clearTimeout(fadeTimer); clearTimeout(clearTimer); };
     }, [message]);
 
-    const isFiltering = searchTerm.trim() !== "" || libraryFilter !== "all";
+    const enabledLibraryNames = useMemo(
+        () => libraries.filter((l) => l.enabled).map((l) => l.name),
+        [libraries]
+    );
+    const groupLibrariesReady = librariesLoaded && groupLibraries !== null;
+
+    // A remembered choice that's no longer an enabled library falls back to all enabled.
+    const effectiveLibraryFilter =
+        libraryFilter === "all" || libraryFilter === "none" || !librariesLoaded || enabledLibraryNames.includes(libraryFilter)
+            ? libraryFilter
+            : "all";
+
+    const isFiltering = searchTerm.trim() !== "" || effectiveLibraryFilter !== "all";
+
+    // Groups are only shown when they draw from an enabled library. Groups with
+    // no collections in any library (e.g. brand new ones) are shown too, so they
+    // can be filled in.
+    const groupIsInEnabledLibrary = useCallback(
+        (name: string) => {
+            const libs = groupLibraries?.[name] ?? [];
+            return libs.length === 0 || libs.some((l) => enabledLibraryNames.includes(l));
+        },
+        [groupLibraries, enabledLibraryNames]
+    );
+
+    const hiddenGroupCount = useMemo(
+        () => (groupLibrariesReady ? sortedGroups.filter((g) => !groupIsInEnabledLibrary(g.name)).length : 0),
+        [groupLibrariesReady, sortedGroups, groupIsInEnabledLibrary]
+    );
 
     const filteredGroups = useMemo(() => {
+        if (!groupLibrariesReady) return [];
         const term = searchTerm.toLowerCase().trim();
         return sortedGroups.filter((group) => {
             if (!group.name.toLowerCase().includes(term)) return false;
-            if (libraryFilter === "all") return true;
-            // Until group libraries have loaded, don't hide anything.
-            if (!groupLibraries) return true;
-            const libs = groupLibraries[group.name] ?? [];
-            if (libraryFilter === "none") return libs.length === 0;
-            return libs.includes(libraryFilter);
+            if (!groupIsInEnabledLibrary(group.name)) return false;
+            const libs = groupLibraries?.[group.name] ?? [];
+            if (effectiveLibraryFilter === "all") return true;
+            if (effectiveLibraryFilter === "none") return libs.length === 0;
+            return libs.includes(effectiveLibraryFilter);
         });
-    }, [sortedGroups, searchTerm, libraryFilter, groupLibraries]);
+    }, [groupLibrariesReady, sortedGroups, searchTerm, effectiveLibraryFilter, groupLibraries, groupIsInEnabledLibrary]);
 
-    // Libraries offered in the filter: enabled ones first, then any other
-    // library a group draws from.
+    // Dropdown: enabled libraries are selectable; any other library a group draws
+    // from, or that's configured but switched off, is listed as not enabled.
     const libraryFilterOptions = useMemo(() => {
-        const enabled = libraries.filter((l) => l.enabled).map((l) => l.name);
-        const fromGroups = new Set(Object.values(groupLibraries ?? {}).flat());
-        const others = [...fromGroups].filter((l) => !enabled.includes(l)).sort();
-        return { enabled, others };
-    }, [libraries, groupLibraries]);
+        const fromGroups = Object.values(groupLibraries ?? {}).flat();
+        const configured = libraries.map((l) => l.name);
+        const notEnabled = [...new Set([...configured, ...fromGroups])]
+            .filter((l) => !enabledLibraryNames.includes(l))
+            .sort();
+        return { enabled: enabledLibraryNames, notEnabled };
+    }, [libraries, groupLibraries, enabledLibraryNames]);
 
     const handleRename = async () => {
         if (!renaming) return;
@@ -815,35 +849,40 @@ export default function GroupsPage() {
                                     <List className="h-4 w-4" />
                                 </button>
                             </div>
-                            <Listbox value={libraryFilter} onChange={handleLibraryFilterChange}>
+                            <Listbox value={effectiveLibraryFilter} onChange={handleLibraryFilterChange}>
                                 <div className="relative">
                                     <Listbox.Button className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/70 transition-colors min-w-[160px]">
                                         <span className="flex-1 text-left truncate">
-                                            {libraryFilter === "all"
-                                                ? "All libraries"
-                                                : libraryFilter === "none"
-                                                  ? "No library found"
-                                                  : libraryFilter}
+                                            {effectiveLibraryFilter === "all"
+                                                ? "All enabled libraries"
+                                                : effectiveLibraryFilter === "none"
+                                                  ? "No collections yet"
+                                                  : effectiveLibraryFilter}
                                         </span>
                                         <ChevronDown className="h-4 w-4 text-slate-400" />
                                     </Listbox.Button>
                                     <Listbox.Options className="absolute right-0 z-20 mt-1 w-60 max-h-72 overflow-auto rounded-lg border border-slate-700 bg-slate-800 py-1 shadow-lg focus:outline-none">
                                         {[
-                                            { value: "all", label: "All libraries", hint: "" },
-                                            ...libraryFilterOptions.enabled.map((l) => ({ value: l, label: l, hint: "enabled" })),
-                                            ...libraryFilterOptions.others.map((l) => ({ value: l, label: l, hint: "" })),
-                                            { value: "none", label: "No library found", hint: "" },
+                                            { value: "all", label: "All enabled libraries", enabled: true },
+                                            ...libraryFilterOptions.enabled.map((l) => ({ value: l, label: l, enabled: true })),
+                                            { value: "none", label: "No collections yet", enabled: true },
+                                            ...libraryFilterOptions.notEnabled.map((l) => ({ value: l, label: l, enabled: false })),
                                         ].map((opt) => (
                                             <Listbox.Option
                                                 key={opt.value}
                                                 value={opt.value}
-                                                className="cursor-pointer px-3 py-2 text-sm text-white hover:bg-slate-700 data-[selected]:bg-primary data-[selected]:font-semibold flex items-center justify-between gap-2"
+                                                disabled={!opt.enabled}
+                                                className={`px-3 py-2 text-sm flex items-center justify-between gap-2 ${
+                                                    opt.enabled
+                                                        ? "cursor-pointer text-white hover:bg-slate-700 data-[selected]:bg-primary data-[selected]:font-semibold"
+                                                        : "cursor-not-allowed text-slate-500"
+                                                }`}
                                             >
                                                 {({ selected }) => (
                                                     <>
                                                         <span className="truncate">{opt.label}</span>
                                                         <span className="flex items-center gap-1.5 shrink-0">
-                                                            {opt.hint && <span className="text-[10px] uppercase tracking-wide text-emerald-400">{opt.hint}</span>}
+                                                            {!opt.enabled && <span className="text-[10px] uppercase tracking-wide text-slate-500">not enabled</span>}
                                                             {selected && <Check className="h-4 w-4 text-white" />}
                                                         </span>
                                                     </>
@@ -867,7 +906,17 @@ export default function GroupsPage() {
                     </div>
                 </div>
                 <div className="space-y-4">
-                {filteredGroups.length ? (
+                {groupLibrariesReady && hiddenGroupCount > 0 && (
+                    <p className="text-xs text-slate-500">
+                        {hiddenGroupCount} group{hiddenGroupCount !== 1 ? "s are" : " is"} hidden because{" "}
+                        {hiddenGroupCount !== 1 ? "their collections are" : "its collections are"} only in libraries that aren't enabled.
+                    </p>
+                )}
+                {!groupLibrariesReady ? (
+                    <div className="flex items-center gap-2 text-sm text-slate-400">
+                        <Loader2 className="h-4 w-4 animate-spin" /> Checking which libraries your groups use…
+                    </div>
+                ) : filteredGroups.length ? (
                     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
                         <SortableContext items={filteredGroups.map((g) => g.name)} strategy={viewMode === "list" ? verticalListSortingStrategy : rectSortingStrategy}>
                             {viewMode === "list" ? (
