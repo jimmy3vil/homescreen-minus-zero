@@ -129,6 +129,14 @@ def create_app() -> FastAPI:
         except Exception as exc:
             logger.warning("Could not assign libraries to groups on startup: %s", exc)
 
+        # Daily per-collection stats (plays, latest item added) for the Collections page
+        try:
+            from homescreen_hero.core.collection_stats import start_stats_scheduler
+
+            start_stats_scheduler()
+        except Exception as exc:
+            logger.warning("Could not start collection stats schedule: %s", exc)
+
         # Sync user filter settings for per-user targeting (hsh-hide-{username} labels).
         try:
             config = load_config()
@@ -141,6 +149,9 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def _stop_scheduler() -> None:
         stop_rotation_scheduler()
+        from homescreen_hero.core.collection_stats import stop_stats_scheduler
+
+        stop_stats_scheduler()
 
     return app
 

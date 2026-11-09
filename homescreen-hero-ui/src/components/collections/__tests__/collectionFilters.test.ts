@@ -38,6 +38,8 @@ function coll(over: Partial<CollectionOverview>): CollectionOverview {
         times_rotated: 0,
         last_rotated_at: null,
         total_plays: null,
+        latest_item_added_at: null,
+        trending: false,
         ...over,
     };
 }

@@ -26,6 +26,8 @@ export type CollectionOverview = {
     times_rotated: number;
     last_rotated_at: string | null;
     total_plays: number | null;
+    latest_item_added_at: string | null;
+    trending: boolean;
 };
 
 export type Scope = "all" | "rotation" | "pinned";
@@ -101,8 +103,8 @@ export const SORTS: { key: SortKey; label: string }[] = [
 ];
 
 export const TOTAL_PLAYS_HINT =
-    "Total Plays adds up the plays (last 30 days, from Tautulli) of every item in the collection. " +
-    "It's only recorded for collections that have been in a rotation.";
+    "Total Plays adds up the plays over the last 30 days (from Tautulli) of every item in the collection. " +
+    "It's refreshed once a day.";
 
 // ------------------------------------------------------------------ matching
 
@@ -224,7 +226,7 @@ export function activeFilterChips(f: CollectionFilters): { key: FilterKey; label
     if (f.q.trim()) chips.push({ key: "q", label: `Search: "${f.q.trim()}"` });
     if (f.title?.value) chips.push({ key: "title", label: `Title ${textOpLabel(f.title.op)} "${f.title.value}"` });
     if (f.sortTitle?.value) chips.push({ key: "sortTitle", label: `Sort title ${textOpLabel(f.sortTitle.op)} "${f.sortTitle.value}"` });
-    if (f.kind) chips.push({ key: "kind", label: f.kind === "smart" ? "Smart collections" : "Static collections" });
+    if (f.kind) chips.push({ key: "kind", label: f.kind === "smart" ? "Smart collections" : "Manual collections" });
     if (f.group) chips.push({ key: "group", label: f.group === NO_GROUP ? "Not in any group" : `In group: ${f.group}` });
     if (f.label) chips.push({ key: "label", label: `Label: ${f.label}` });
     if (f.empty) chips.push({ key: "empty", label: "Empty (0 items)" });

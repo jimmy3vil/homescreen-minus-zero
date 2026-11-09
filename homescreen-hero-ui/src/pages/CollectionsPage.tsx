@@ -304,6 +304,7 @@ export default function CollectionsPage() {
         pin: (c, v) => togglePin(c, v),
         unpin: (c) => togglePin(c),
         pinning: pinningKey,
+        showAttention: !!(filters.empty || filters.noSummary || filters.noPoster || filters.lastRotated?.op === "never"),
         groups: libraryGroups,
         setGroup: async (c, group, member) => {
             try {
@@ -886,7 +887,7 @@ export default function CollectionsPage() {
                     <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
                         <div className="inline-flex rounded-lg border border-slate-700 bg-slate-900 p-0.5">
                             {([
-                                { key: "static", label: "Static", hint: "Pick items by hand" },
+                                { key: "static", label: "Manual", hint: "Pick items by hand" },
                                 { key: "smart", label: "Smart", hint: "Built from filters" },
                             ] as const).map((opt) => (
                                 <button

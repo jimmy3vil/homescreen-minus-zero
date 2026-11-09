@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Check, Loader2, Upload, X } from "lucide-react";
 import { fetchWithAuth } from "../../utils/api";
 import SmartCollectionBuilder, { type InitialSmartQuery, type SmartQuery } from "../SmartCollectionBuilder";
+import CollectionItemsEditor from "./CollectionItemsEditor";
 import {
     Sheet,
     SheetBody,
@@ -33,7 +34,7 @@ type EditData = {
     smart_query: (InitialSmartQuery & { nested: boolean }) | null;
 };
 
-type Tab = "details" | "artwork" | "advanced" | "filters";
+type Tab = "details" | "items" | "artwork" | "advanced" | "filters";
 
 type Props = {
     library: string;
@@ -338,9 +339,10 @@ export default function EditCollectionPanel({ library, ratingKey, knownLabels, o
 
     const tabs: { key: Tab; label: string }[] = [
         { key: "details", label: "Details" },
+        ...(data && !data.smart ? [{ key: "items" as Tab, label: "Items" }] : []),
+        ...(data?.smart ? [{ key: "filters" as Tab, label: "Filters" }] : []),
         { key: "artwork", label: "Artwork" },
         { key: "advanced", label: "Advanced" },
-        ...(data?.smart ? [{ key: "filters" as Tab, label: "Filters" }] : []),
     ];
 
     return (
@@ -350,7 +352,7 @@ export default function EditCollectionPanel({ library, ratingKey, knownLabels, o
                     <div className="min-w-0">
                         <SheetTitle>Edit collection</SheetTitle>
                         <SheetDescription>
-                            {data ? `${data.title} · ${data.smart ? "Smart" : "Static"} collection · ${data.item_count} items · ${library}` : "Loading…"}
+                            {data ? `${data.title} · ${data.smart ? "Smart" : "Manual"} collection · ${library}` : "Loading…"}
                         </SheetDescription>
                     </div>
                     <SheetCloseButton />
@@ -402,6 +404,13 @@ export default function EditCollectionPanel({ library, ratingKey, knownLabels, o
                                 <LabelEditor labels={labels} onChange={setLabels} known={knownLabels} />
                             </div>
                         </div>
+                    ) : tab === "items" ? (
+                        <CollectionItemsEditor
+                            base={base}
+                            library={library}
+                            customOrder={data.collection_sort === "custom"}
+                            onChanged={onSaved}
+                        />
                     ) : tab === "artwork" ? (
                         <div className="space-y-3">
                             {ARTWORK.map((a) => (
@@ -477,7 +486,7 @@ export default function EditCollectionPanel({ library, ratingKey, knownLabels, o
                     {saveError && <p className="text-sm text-red-400">{saveError}</p>}
                 </SheetBody>
 
-                {data && tab !== "artwork" && (
+                {data && tab !== "artwork" && tab !== "items" && (
                     <SheetFooter>
                         <button type="button" onClick={onClose} className="rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-slate-700">
                             Close

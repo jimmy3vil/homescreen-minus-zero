@@ -133,9 +133,11 @@ function ChoicePicker({
                 <ComboboxButton className="absolute inset-y-0 right-0 flex items-center pr-2">
                     <ChevronDown className="h-4 w-4 text-slate-400" />
                 </ComboboxButton>
+                {/* Rendered in place (no portal): inside a dialog, anything drawn
+                    outside the dialog can't be clicked */}
                 <ComboboxOptions
-                    anchor="bottom start"
-                    className="z-50 w-[var(--input-width)] max-h-60 overflow-auto rounded-lg border border-slate-700 bg-slate-800 py-1 shadow-lg empty:invisible"
+                    portal={false}
+                    className="absolute left-0 top-full z-50 mt-1 w-full max-h-60 overflow-auto rounded-lg border border-slate-700 bg-slate-800 py-1 shadow-lg empty:invisible"
                 >
                     {filtered.map((c) => (
                         <ComboboxOption

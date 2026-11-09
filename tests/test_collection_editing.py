@@ -77,3 +77,30 @@ def test_artwork_links_must_be_http():
         editing.upload_artwork(coll, "poster", url="file:///etc/passwd")
     with pytest.raises(ValueError, match="Unknown artwork"):
         editing.upload_artwork(coll, "banner", url="https://x/y.jpg")
+
+
+def test_item_edits_only_for_manual_collections():
+    smart = NS(smart=True)
+    with pytest.raises(ValueError, match="filters"):
+        editing.remove_item(smart, "5")
+    with pytest.raises(ValueError, match="filters"):
+        editing.add_items(None, smart, ["5"])
+
+
+def test_add_items_skips_ones_already_in_the_collection():
+    added = []
+    coll = NS(smart=False, items=lambda: [NS(ratingKey=1)], addItems=lambda items: added.extend(items))
+    server = NS(fetchItem=lambda k: NS(ratingKey=k))
+    assert editing.add_items(server, coll, ["1", "2", "2", "3"]) == 2
+    assert [i.ratingKey for i in added] == [2, 3]
+
+
+def test_move_requires_custom_order():
+    moves = []
+    coll = NS(smart=False, collectionSort=0, moveItem=lambda item, after=None: moves.append((item.ratingKey, after and after.ratingKey)))
+    with pytest.raises(ValueError, match="Custom"):
+        editing.move_item(coll, "5", "6")
+    coll.collectionSort = 2
+    editing.move_item(coll, "5", "6")
+    editing.move_item(coll, "7", None)
+    assert moves == [(5, 6), (7, None)]

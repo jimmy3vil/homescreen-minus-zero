@@ -64,12 +64,13 @@ def test_overview_combines_plex_and_app_data(monkeypatch):
     )
 
     from homescreen_hero.core import db as core_db
-    from homescreen_hero.core.db import analytics as db_analytics
     from homescreen_hero.core import poster_proxy
 
     monkeypatch.setattr(core_db, "get_pinned_collections", lambda: [NS(collection_name="Trending", library_name="Films")])
     monkeypatch.setattr(core_db, "get_rotation_history_context", lambda: (5, {"Trending": NS(times_used=4, last_rotated_at=datetime(2024, 7, 1))}))
-    monkeypatch.setattr(db_analytics, "get_latest_plays_by_collection", lambda lib: {"Trending": 12})
+    from homescreen_hero.core import collection_stats
+
+    monkeypatch.setattr(collection_stats, "latest_stats", lambda lib: {"11": {"plays": 12, "item_count": 0, "latest_item_added_at": datetime(2024, 7, 2), "collected_at": datetime(2024, 7, 3)}})
     monkeypatch.setattr(poster_proxy, "build_collection_poster_url", lambda s, c: f"/p/{c.ratingKey}")
 
     data = overview.build_overview(server, config, "Films")
@@ -83,6 +84,9 @@ def test_overview_combines_plex_and_app_data(monkeypatch):
     assert t["on_recommended"] and t["in_rotation"] and not t["on_home"]
     assert t["pinned"] and t["has_custom_poster"] and t["item_count"] == 0
     assert t["times_rotated"] == 4 and t["total_plays"] == 12 and t["groups"] == []
+    assert t["latest_item_added_at"] == "2024-07-02T00:00:00"
+    assert not t["trending"]  # 0 items: plays per item can't be worked out
+    assert data["stats_collected_at"] == "2024-07-03T00:00:00"
 
     assert data["groups"] == ["Actors", "Kometa smart"]
     assert data["labels"] == ["Kometa"]

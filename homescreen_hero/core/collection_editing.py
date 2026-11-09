@@ -246,3 +246,40 @@ def upload_artwork(collection, kind: str, url: Optional[str] = None, filepath: O
         getattr(collection, upload_method)(filepath=filepath)
     else:
         raise ValueError("Choose a file or paste an image link")
+
+
+# ------------------------------------------------------------------ items (manual collections)
+
+def _require_manual(collection) -> None:
+    if getattr(collection, "smart", False):
+        raise ValueError("A smart collection's items come from its filters")
+
+
+def add_items(server, collection, rating_keys: List[str]) -> int:
+    _require_manual(collection)
+    existing = {str(i.ratingKey) for i in collection.items()}
+    new = [k for k in dict.fromkeys(rating_keys) if k not in existing]
+    if not new:
+        return 0
+    items = [server.fetchItem(int(k)) for k in new]
+    collection.addItems(items)
+    return len(items)
+
+
+class _Ref:
+    # Minimal stand-in for a Plex item; moveItem only needs its rating key
+    def __init__(self, rating_key: str):
+        self.ratingKey = int(rating_key)
+
+
+def remove_item(collection, rating_key: str) -> None:
+    _require_manual(collection)
+    collection.removeItems([_Ref(rating_key)])
+
+
+def move_item(collection, rating_key: str, after: Optional[str]) -> None:
+    # Only meaningful when the collection's item order is Custom
+    _require_manual(collection)
+    if getattr(collection, "collectionSort", 0) != 2:
+        raise ValueError("Set the item order to Custom (Advanced tab) to arrange items by hand")
+    collection.moveItem(_Ref(rating_key), after=_Ref(after) if after else None)

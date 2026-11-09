@@ -73,8 +73,8 @@ def _group_membership(config, library: str, collections: List[Any]) -> Dict[str,
 
 
 def build_overview(server, config, library: str) -> Dict[str, Any]:
+    from .collection_stats import latest_stats, trending_keys
     from .db import get_pinned_collections, get_rotation_history_context
-    from .db.analytics import get_latest_plays_by_collection
     from .integrations.plex_client import get_collection_labels
     from .poster_proxy import build_collection_poster_url
 
@@ -93,7 +93,7 @@ def build_overview(server, config, library: str) -> Dict[str, Any]:
         if not getattr(p, "library_name", None) or p.library_name == library
     }
     _, usage = get_rotation_history_context()
-    plays = get_latest_plays_by_collection(library)
+    stats = latest_stats(library)
     groups = _group_membership(config, library, collections)
 
     rows = []
@@ -103,6 +103,7 @@ def build_overview(server, config, library: str) -> Dict[str, Any]:
         on_recommended = bool(hub and hub.promotedToRecommended)
         on_shared = bool(hub and hub.promotedToSharedHome)
         use = usage.get(c.title)
+        stat = stats.get(str(c.ratingKey), {})
         rows.append({
             "rating_key": str(c.ratingKey),
             "title": c.title,
@@ -124,12 +125,29 @@ def build_overview(server, config, library: str) -> Dict[str, Any]:
             "groups": groups.get(c.title, []),
             "times_rotated": int(use.times_used) if use else 0,
             "last_rotated_at": _iso(use.last_rotated_at) if use else None,
-            "total_plays": plays.get(c.title),
+            "total_plays": stat.get("plays"),
+            "latest_item_added_at": _iso(stat.get("latest_item_added_at")),
+            "trending": False,
         })
+
+    # Trending: top collections by plays per item over the last 30 days
+    trending = trending_keys([
+        {"rating_key": r["rating_key"], "plays": r["total_plays"], "item_count": r["item_count"]}
+        for r in rows
+    ])
+    for r in rows:
+        r["trending"] = r["rating_key"] in trending
 
     group_names = sorted(g.name for g in config.groups if g.library == library)
     labels = sorted({label for r in rows for label in r["labels"]}, key=str.lower)
-    return {"library": library, "collections": rows, "groups": group_names, "labels": labels}
+    stats_at = max((s["collected_at"] for s in stats.values()), default=None)
+    return {
+        "library": library,
+        "collections": rows,
+        "groups": group_names,
+        "labels": labels,
+        "stats_collected_at": _iso(stats_at),
+    }
 
 
 def get_overview(server, config, library: str, cache_version: int, refresh: bool = False) -> Dict[str, Any]:

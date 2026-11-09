@@ -1655,3 +1655,105 @@ async def set_collection_artwork(
             os.unlink(tmp_path)
     _after_edit(library)
     return {"success": True}
+
+
+class AddItemsIn(BaseModel):
+    rating_keys: List[str]
+
+
+class MoveItemIn(BaseModel):
+    after: Optional[str] = None  # None = move to the start
+
+
+@router.get("/library/{library}/collection/{rating_key}/all-items")
+def list_all_collection_items(
+    library: str,
+    rating_key: str,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    # Every item in a collection, in its current order, for the Items tab.
+    from homescreen_hero.core.collections_overview import collection_items
+
+    server, _, _ = _editable_collection(library, rating_key)
+    try:
+        return collection_items(server, rating_key, limit=5000)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+
+
+@router.post("/library/{library}/collection/{rating_key}/items")
+def add_collection_items(
+    library: str,
+    rating_key: str,
+    payload: AddItemsIn,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.collection_editing import add_items
+
+    server, _, collection = _editable_collection(library, rating_key)
+    try:
+        added = add_items(server, collection, payload.rating_keys)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+    _after_edit(library)
+    return {"success": True, "added": added}
+
+
+@router.delete("/library/{library}/collection/{rating_key}/items/{item_rating_key}")
+def remove_collection_item(
+    library: str,
+    rating_key: str,
+    item_rating_key: str,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.collection_editing import remove_item
+
+    _, _, collection = _editable_collection(library, rating_key)
+    try:
+        remove_item(collection, item_rating_key)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+    _after_edit(library)
+    return {"success": True}
+
+
+@router.put("/library/{library}/collection/{rating_key}/items/{item_rating_key}/move")
+def move_collection_item(
+    library: str,
+    rating_key: str,
+    item_rating_key: str,
+    payload: MoveItemIn,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.collection_editing import move_item
+
+    _, _, collection = _editable_collection(library, rating_key)
+    try:
+        move_item(collection, item_rating_key, payload.after)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
+    _after_edit(library)
+    return {"success": True}
+
+
+@router.post("/stats/refresh")
+def refresh_collection_stats(
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    # Recollect plays and latest-item dates now, in the background.
+    import threading
+
+    from homescreen_hero.core.collection_stats import collect_all_stats
+
+    def run():
+        collect_all_stats()
+        invalidate_collections_cache()
+
+    threading.Thread(target=run, name="collection-stats", daemon=True).start()
+    return {"started": True}

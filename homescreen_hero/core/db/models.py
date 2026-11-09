@@ -425,3 +425,19 @@ class SeerrAutoRequest(Base):
         DateTime, nullable=False, default=datetime.utcnow
     )
     downloaded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class CollectionStats(Base):
+    # Daily snapshot per collection: plays of its items over the last 30 days
+    # (from Tautulli) and when an item was last added. Feeds Total Plays,
+    # Trending and the Updated badge on the Collections page.
+    __tablename__ = "collection_stats"
+
+    id = Column(Integer, primary_key=True, index=True)
+    library = Column(String, nullable=False, index=True)
+    rating_key = Column(String, nullable=False, index=True)
+    collection_name = Column(String, nullable=False)
+    collected_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    item_count = Column(Integer, nullable=False, default=0)
+    plays_30d = Column(Integer, nullable=True)  # None when Tautulli isn't set up
+    latest_item_added_at = Column(DateTime, nullable=True)

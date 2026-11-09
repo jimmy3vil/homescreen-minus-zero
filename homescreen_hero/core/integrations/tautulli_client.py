@@ -435,6 +435,30 @@ class TautulliClient:
             logger.error("Failed to get plays by stream type: %s", exc, exc_info=True)
             return {}
 
+    def get_library_history_since(self, section_id: int, after: str, page_size: int = 1000) -> List[Dict[str, Any]]:
+        """
+        Every play in a library since a date (YYYY-MM-DD), all pages.
+        Raises on API errors so callers can tell "no plays" from "failed".
+        """
+        rows: List[Dict[str, Any]] = []
+        start = 0
+        while True:
+            data = self._request(
+                "get_history",
+                params={
+                    "section_id": str(section_id),
+                    "after": after,
+                    "length": str(page_size),
+                    "start": str(start),
+                },
+                timeout=60.0,
+            )
+            page = data.get("data", []) if isinstance(data, dict) else (data or [])
+            rows.extend(page)
+            if len(page) < page_size:
+                return rows
+            start += page_size
+
     def get_history(
         self,
         length: int = 1000,

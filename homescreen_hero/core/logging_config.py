@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -23,17 +24,39 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "homescreen_hero.log"
 
 
+# Plex tokens appear in URLs (X-Plex-Token=…, or %3D-encoded inside another
+# URL) and in header dicts ('X-Plex-Token': '…'). Never write them to logs.
+_TOKEN_PATTERN = re.compile(
+    r"""(?i)(x-plex-token(?:=|%3D|['"]?\s*:\s*['"]))[^&\s'"%,}]+"""
+)
+
+
+def redact_secrets(text: str) -> str:
+    return _TOKEN_PATTERN.sub(r"\1REDACTED", text)
+
+
+class RedactingFormatter(logging.Formatter):
+    # Formats as usual, then masks Plex tokens anywhere in the line,
+    # including exception tracebacks.
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_secrets(super().format(record))
+
+
 def level_from_name(name: str) -> int:
     return getattr(logging, name.upper(), logging.INFO)
+
+
+def _formatter() -> logging.Formatter:
+    return RedactingFormatter(
+        fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
 
 def _configure_handlers(root: logging.Logger, level: int) -> None:
     existing_handler_types = {type(handler) for handler in root.handlers}
 
-    formatter = logging.Formatter(
-        fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    formatter = _formatter()
 
     if RotatingFileHandler not in existing_handler_types:
         file_handler = RotatingFileHandler(
@@ -64,6 +87,7 @@ def setup_logging(level: int | str = logging.INFO, reconfigure: bool = False) ->
 
     for handler in root.handlers:
         handler.setLevel(level)
+        handler.setFormatter(_formatter())
 
     # Keep noisy third-party loggers at WARNING even when log level is set to DEBUG
     for noisy in ("urllib3", "httpcore", "httpx"):

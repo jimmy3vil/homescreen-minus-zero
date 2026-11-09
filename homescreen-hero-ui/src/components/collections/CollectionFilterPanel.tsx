@@ -247,9 +247,9 @@ export default function CollectionFilterPanel({ open, onOpenChange, library, fil
 
                     <Section title="Type">
                         <select value={filters.kind ?? ""} onChange={(e) => set("kind", (e.target.value || undefined) as CollectionFilters["kind"])} className={`${field} w-full`}>
-                            <option value="">Smart and static collections</option>
+                            <option value="">Smart and manual collections</option>
                             <option value="smart">Smart collections only</option>
-                            <option value="static">Static collections only</option>
+                            <option value="static">Manual collections only</option>
                         </select>
                     </Section>
 
