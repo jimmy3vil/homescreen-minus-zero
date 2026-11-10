@@ -241,9 +241,22 @@ def preview_item(el) -> Dict[str, Any]:
     }
 
 
+def _with_stable_order(section, query: SmartQuery) -> SmartQuery:
+    # Without a sort, Plex returns matches in no fixed order, so pages can
+    # shuffle. Previews fall back to title A–Z; saved collections are untouched.
+    import dataclasses
+
+    if query.sort:
+        return query
+    if "titleSort" in {s.key for s in section.listSorts(query.libtype)}:
+        return dataclasses.replace(query, sort="titleSort")
+    return query
+
+
 def preview(server, section, query: SmartQuery, start: int = 0, size: int = 30) -> Dict[str, Any]:
     # How many items match, and one page of them. A limited collection never
     # matches more than its limit, so paging stops there.
+    query = _with_stable_order(section, query)
     key = build_search_key(section, query)
     total_cap = int(query.limit) if query.limit else None
     if total_cap is not None:
@@ -258,6 +271,7 @@ def preview(server, section, query: SmartQuery, start: int = 0, size: int = 30) 
 
 def matching_keys(server, section, query: SmartQuery, cap: int = 5000) -> Dict[str, Any]:
     # The IDs of every item the rules match (up to cap), for "Select all".
+    query = _with_stable_order(section, query)
     key = build_search_key(section, query)
     data = server.query(f"{key}&X-Plex-Container-Start=0&X-Plex-Container-Size={int(cap)}")
     total = int(data.attrib.get("totalSize", data.attrib.get("size", 0)))

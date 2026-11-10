@@ -179,18 +179,16 @@ def collection_items(server, rating_key: str, limit: int = 20) -> Dict[str, Any]
         f"?X-Plex-Container-Start=0&X-Plex-Container-Size={int(limit)}"
     )
     total = int(data.attrib.get("totalSize", data.attrib.get("size", 0)))
+    from .smart_collections import preview_item
+
     items = []
     for el in data:
-        key = el.attrib.get("ratingKey")
-        if not key:
+        if not el.attrib.get("ratingKey"):
             continue
-        thumb = el.attrib.get("thumb")
-        items.append({
-            "rating_key": key,
-            "title": el.attrib.get("title"),
-            "year": el.attrib.get("year"),
-            "poster_url": create_proxy_url(server.url(thumb, includeToken=True)) if thumb else None,
-        })
+        item = preview_item(el)
+        thumb = item.pop("thumb", None)
+        item["poster_url"] = create_proxy_url(server.url(thumb, includeToken=True)) if thumb else None
+        items.append(item)
     return {"total": total, "items": items[: int(limit)]}
 
 

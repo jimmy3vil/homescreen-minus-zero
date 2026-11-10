@@ -13,11 +13,14 @@ import { CSS } from "@dnd-kit/utilities";
 import { GripVertical, Loader2, Plus, Trash2 } from "lucide-react";
 import { fetchWithAuth } from "../../utils/api";
 import ItemFinder from "./ItemFinder";
+import { Poster, ViewToggle } from "./MatchPreview";
+import { details, type PreviewItem } from "./itemDetails";
+import { useItemView } from "./listView";
 
 // The items in a manual collection: add from the library, remove, and (when
 // the collection's item order is Custom) drag to arrange.
 
-type Item = { rating_key: string; title: string; year: string | number | null; poster_url: string | null };
+type Item = PreviewItem;
 
 type Props = {
     base: string; // /api/collections/library/{library}/collection/{id}
@@ -33,7 +36,21 @@ async function readError(r: Response, fallback: string) {
     return (data && (data.detail || data.message)) || fallback;
 }
 
-function ItemRow({ item, draggable, busy, onRemove }: { item: Item; draggable: boolean; busy: boolean; onRemove: () => void }) {
+function RemoveButton({ item, busy, onRemove, overlay = false }: { item: Item; busy: boolean; onRemove: () => void; overlay?: boolean }) {
+    return (
+        <button
+            type="button"
+            onClick={onRemove}
+            disabled={busy}
+            className={`p-1.5 disabled:opacity-50 ${overlay ? "rounded-md bg-slate-900/80 text-slate-300 hover:text-red-400" : "text-slate-500 hover:text-red-400"}`}
+            aria-label={`Remove ${item.title} from this collection`}
+        >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+        </button>
+    );
+}
+
+function ItemRow({ item, draggable, busy, onRemove, compact }: { item: Item; draggable: boolean; busy: boolean; onRemove: () => void; compact: boolean }) {
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.rating_key, disabled: !draggable });
     return (
         <div
@@ -46,16 +63,22 @@ function ItemRow({ item, draggable, busy, onRemove }: { item: Item; draggable: b
                     <GripVertical className="h-4 w-4" />
                 </button>
             )}
-            <div className="h-12 w-8 shrink-0 overflow-hidden rounded bg-slate-800">
-                {item.poster_url && <img src={item.poster_url} alt="" className="h-full w-full object-cover" loading="lazy" />}
-            </div>
-            <div className="min-w-0 flex-1">
-                <p className="truncate text-sm text-white">{item.title}</p>
-                {item.year && <p className="text-xs text-slate-500">{item.year}</p>}
-            </div>
-            <button type="button" onClick={onRemove} disabled={busy} className="p-1.5 text-slate-500 hover:text-red-400 disabled:opacity-50" aria-label={`Remove ${item.title} from this collection`}>
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-            </button>
+            {compact ? (
+                <div className="flex min-w-0 flex-1 items-baseline gap-2">
+                    <span className="truncate text-sm text-white">{item.title}</span>
+                    {item.year && <span className="shrink-0 text-xs text-slate-500">{item.year}</span>}
+                </div>
+            ) : (
+                <>
+                    <Poster item={item} className="h-16 w-11 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-white">{item.title}</p>
+                        <p className="text-xs text-slate-400">{details(item)}</p>
+                        {item.genres?.length > 0 && <p className="truncate text-xs text-slate-500">{item.genres.join(", ")}</p>}
+                    </div>
+                </>
+            )}
+            <RemoveButton item={item} busy={busy} onRemove={onRemove} />
         </div>
     );
 }
@@ -67,6 +90,8 @@ export default function CollectionItemsEditor({ base, library, customOrder, onCh
 
     const [selected, setSelected] = useState<Set<string>>(new Set());
     const [adding, setAdding] = useState(false);
+    const [view, setView] = useItemView();
+    const listView = view === "detailed" || view === "compact";
 
     const sensors = useSensors(
         useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -172,25 +197,51 @@ export default function CollectionItemsEditor({ base, library, customOrder, onCh
                     <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
                         {items ? `${plural(items.length, "item")} in this collection` : "Items in this collection"}
                     </span>
-                    {!customOrder && items && items.length > 1 && (
-                        <span className="text-xs text-slate-500">To arrange by hand, set item order to Custom in Advanced</span>
-                    )}
+                    <span className="flex items-center gap-2">
+                        {items && items.length > 1 && !customOrder && (
+                            <span className="text-xs text-slate-500">To arrange by hand, set item order to Custom in Advanced</span>
+                        )}
+                        {items && items.length > 1 && customOrder && !listView && (
+                            <span className="text-xs text-slate-500">Switch to a list view to drag items into order</span>
+                        )}
+                        <ViewToggle view={view} onChange={setView} />
+                    </span>
                 </div>
                 {error && <p className="text-sm text-red-400">{error}</p>}
                 {!items ? (
                     !error && <p className="flex items-center gap-2 text-sm text-slate-400"><Loader2 className="h-4 w-4 animate-spin" /> Loading items…</p>
                 ) : items.length === 0 ? (
                     <p className="text-sm text-slate-500">This collection has 0 items.</p>
-                ) : (
+                ) : listView ? (
                     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
                         <SortableContext items={items.map((i) => i.rating_key)} strategy={verticalListSortingStrategy}>
                             <div className="space-y-1.5">
                                 {items.map((item) => (
-                                    <ItemRow key={item.rating_key} item={item} draggable={customOrder} busy={removing === item.rating_key} onRemove={() => remove(item)} />
+                                    <ItemRow
+                                        key={item.rating_key}
+                                        item={item}
+                                        draggable={customOrder}
+                                        compact={view === "compact"}
+                                        busy={removing === item.rating_key}
+                                        onRemove={() => remove(item)}
+                                    />
                                 ))}
                             </div>
                         </SortableContext>
                     </DndContext>
+                ) : (
+                    <div className={view === "cards" ? "grid grid-cols-3 gap-3 sm:grid-cols-5" : "flex gap-2 overflow-x-auto pb-1"}>
+                        {items.map((item) => (
+                            <div key={item.rating_key} className={`group relative ${view === "rows" ? "w-24 shrink-0" : ""}`}>
+                                <Poster item={item} className="aspect-[2/3] w-full" />
+                                <span className="absolute right-1 top-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                                    <RemoveButton item={item} busy={removing === item.rating_key} onRemove={() => remove(item)} overlay />
+                                </span>
+                                <p className="mt-1 truncate text-xs text-slate-300" title={item.title}>{item.title}</p>
+                                {view === "cards" && item.year && <p className="text-[11px] text-slate-500">{item.year}</p>}
+                            </div>
+                        ))}
+                    </div>
                 )}
             </div>
         </div>

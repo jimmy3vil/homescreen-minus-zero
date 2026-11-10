@@ -216,3 +216,21 @@ def test_matching_keys_respects_limit_and_cap():
     assert limited["count"] == 50 and len(limited["keys"]) == 50
     capped = matching_keys(Server(), FakeSection(), SmartQuery(libtype="movie"), cap=100)
     assert capped["capped"] and len(capped["keys"]) == 100
+
+
+def test_previews_without_a_sort_use_title_order():
+    import xml.etree.ElementTree as ET
+
+    from homescreen_hero.core.smart_collections import preview
+
+    asked = []
+
+    class Server:
+        def query(self, key):
+            asked.append(key)
+            return ET.Element("MediaContainer", totalSize="0")
+
+    preview(Server(), FakeSection(), SmartQuery(libtype="movie"))
+    preview(Server(), FakeSection(), SmartQuery(libtype="movie", sort="titleSort:desc"))
+    assert "sort=titleSort&" in asked[0]
+    assert "sort=titleSort%3Adesc" in asked[1]

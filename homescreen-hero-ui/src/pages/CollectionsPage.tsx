@@ -745,7 +745,8 @@ export default function CollectionsPage() {
                     collections={overview.collections}
                     onSaved={(message) => {
                         setToast({ message, type: "success" });
-                        loadOverview();
+                        // Straight from Plex, so recent sort-title or label changes are matched
+                        loadOverview(true);
                     }}
                 />
             )}

@@ -541,7 +541,11 @@ export default function EditCollectionPanel({ library, ratingKey, currentType, o
                                         className={`${field} pr-10 sm:w-auto`}
                                     >
                                         <option value="">
-                                            Automatic{currentType && currentType.source !== "manual" ? `: ${currentType.name}` : ": none matches"}
+                                            {currentType?.source === "manual"
+                                                ? "Automatic (from labels, prefixes and groups)"
+                                                : currentType
+                                                  ? `Automatic: ${currentType.name}`
+                                                  : "None"}
                                         </option>
                                         {types.filter((t) => t.id !== null).map((t) => (
                                             <option key={t.id} value={String(t.id)}>{t.name}</option>
@@ -550,9 +554,13 @@ export default function EditCollectionPanel({ library, ratingKey, currentType, o
                                     {typeSaving && <Loader2 className="h-4 w-4 animate-spin text-slate-400" />}
                                 </div>
                                 <p className="mt-1.5 text-xs text-slate-500">
-                                    {currentType && currentType.source !== "manual"
-                                        ? `Worked out from its ${currentType.source === "prefix" ? "sort-title prefix" : currentType.source} "${currentType.matched}". Choose a type to set it by hand.`
-                                        : "Choose a type to set it by hand, or leave on Automatic to use labels, prefixes and groups. Set types up with Collection types on the Collections page."}
+                                    {currentType?.source === "manual"
+                                        ? "Set by hand. Choose the first option to go back to working it out from labels, prefixes and groups."
+                                        : currentType
+                                          ? `From its ${currentType.source === "prefix" ? "sort-title prefix" : currentType.source} "${currentType.matched}". Choose a type to set one by hand.`
+                                          : types.length
+                                            ? "No type matches this collection. Choose one to set it by hand."
+                                            : "No collection types yet. Set them up with Collection types on the Collections page."}
                                 </p>
                             </div>
                             <div>

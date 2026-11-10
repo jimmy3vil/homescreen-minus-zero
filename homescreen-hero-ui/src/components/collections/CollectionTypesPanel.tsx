@@ -12,6 +12,7 @@ import {
     SheetTitle,
 } from "../ui/sheet";
 import { TYPE_COLOR_NAMES, typeColor } from "./typeColors";
+import { typeMatchCounts } from "./collectionTypeMatch";
 import type { CollectionOverview, CollectionTypeDef } from "./collectionFilters";
 
 // The library's collection types: name each one, give it a colour, and choose
@@ -42,6 +43,8 @@ function MatchList({
     options,
     onChange,
     allowCustom,
+    pending = "",
+    onPendingChange,
 }: {
     title: string;
     hint: string;
@@ -49,8 +52,15 @@ function MatchList({
     options: { value: string; label: string }[];
     onChange: (v: string[]) => void;
     allowCustom?: boolean;
+    // Typed but not yet added; kept by the parent so Save can include it
+    pending?: string;
+    onPendingChange?: (text: string) => void;
 }) {
-    const [custom, setCustom] = useState("");
+    const addPending = () => {
+        const v = pending.trim();
+        if (v && !values.includes(v)) onChange([...values, v]);
+        onPendingChange?.("");
+    };
     const available = options.filter((o) => !values.includes(o.value));
     return (
         <div className="space-y-1.5">
@@ -80,19 +90,28 @@ function MatchList({
                     </select>
                 )}
                 {allowCustom && (
-                    <input
-                        value={custom}
-                        onChange={(e) => setCustom(e.target.value)}
-                        onKeyDown={(e) => {
-                            if (e.key === "Enter" && custom.trim()) {
-                                e.preventDefault();
-                                if (!values.includes(custom.trim())) onChange([...values, custom.trim()]);
-                                setCustom("");
-                            }
-                        }}
-                        placeholder="or type one + Enter"
-                        className={`${field} w-40 py-1 text-xs`}
-                    />
+                    <span className="inline-flex items-center gap-1">
+                        <input
+                            value={pending}
+                            onChange={(e) => onPendingChange?.(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    addPending();
+                                }
+                            }}
+                            placeholder="or type one"
+                            className={`${field} w-32 py-1 text-xs`}
+                        />
+                        <button
+                            type="button"
+                            onClick={addPending}
+                            disabled={!pending.trim()}
+                            className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-40"
+                        >
+                            Add
+                        </button>
+                    </span>
                 )}
             </div>
         </div>
@@ -104,11 +123,29 @@ export default function CollectionTypesPanel({ open, onOpenChange, library, labe
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [dirty, setDirty] = useState(false);
+    // Text typed into a type's label/prefix box but not added yet: "index:field" -> text
+    const [pending, setPending] = useState<Record<string, string>>({});
+    const pendingKey = (i: number, f: "labels" | "prefixes") => `${i}:${f}`;
+    const setPendingText = (i: number, f: "labels" | "prefixes", text: string) => {
+        setPending((p) => ({ ...p, [pendingKey(i, f)]: text }));
+        if (text.trim()) setDirty(true);
+    };
+
+    // Types as they'd be saved now, including anything still typed in a box
+    const effectiveTypes = (types ?? []).map((t, i) => {
+        const extra = (f: "labels" | "prefixes") => {
+            const v = (pending[pendingKey(i, f)] ?? "").trim();
+            return v && !t[f].includes(v) ? [v] : [];
+        };
+        return { ...t, labels: [...t.labels, ...extra("labels")], prefixes: [...t.prefixes, ...extra("prefixes")] };
+    });
+    const live = typeMatchCounts(collections, effectiveTypes);
 
     useEffect(() => {
         if (!open) return;
         setTypes(null);
         setDirty(false);
+        setPending({});
         setError(null);
         fetchWithAuth(`/api/collections/library/${encodeURIComponent(library)}/types`)
             .then((r) => r.json())
@@ -121,6 +158,7 @@ export default function CollectionTypesPanel({ open, onOpenChange, library, labe
         setDirty(true);
     };
     const move = (i: number, by: number) => {
+        setPending({});
         setTypes((ts) => {
             if (!ts) return ts;
             const next = [...ts];
@@ -139,11 +177,12 @@ export default function CollectionTypesPanel({ open, onOpenChange, library, labe
             const r = await fetchWithAuth(`/api/collections/library/${encodeURIComponent(library)}/types`, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ types }),
+                body: JSON.stringify({ types: effectiveTypes }),
             });
             const data = await r.json().catch(() => null);
             if (!r.ok) throw new Error(data?.detail ?? "Couldn't save the collection types");
             setTypes(data.types);
+            setPending({});
             setDirty(false);
             onSaved(`Saved ${plural(data.types.length, "collection type")} for ${library}`);
         } catch (e) {
@@ -153,8 +192,7 @@ export default function CollectionTypesPanel({ open, onOpenChange, library, labe
         }
     };
 
-    const countFor = (id: number | null) => (id === null ? 0 : collections.filter((c) => c.type?.id === id).length);
-    const untyped = collections.filter((c) => !c.type).length;
+    const untyped = live.untyped;
 
     return (
         <Sheet open={open} onOpenChange={onOpenChange}>
@@ -185,7 +223,10 @@ export default function CollectionTypesPanel({ open, onOpenChange, library, labe
                                         <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-bold ${typeColor(t.color)}`}>
                                             <Shapes className="h-3 w-3" /> {t.name || "New type"}
                                         </span>
-                                        <span className="text-xs text-slate-500">{t.id === null ? "not saved yet" : plural(countFor(t.id), "collection")}</span>
+                                        <span className={`text-xs ${live.counts[i] ? "text-emerald-300" : "text-slate-500"}`}>
+                                            matches {plural(live.counts[i] ?? 0, "collection")}
+                                            {(t.id === null || dirty) && " (not saved yet)"}
+                                        </span>
                                         <span className="ml-auto flex items-center gap-1">
                                             <button type="button" disabled={i === 0} onClick={() => move(i, -1)} className="p-1.5 text-slate-400 hover:text-white disabled:opacity-30" aria-label="Move up">
                                                 <ArrowUp className="h-4 w-4" />
@@ -196,6 +237,7 @@ export default function CollectionTypesPanel({ open, onOpenChange, library, labe
                                             <button
                                                 type="button"
                                                 onClick={() => {
+                                                    setPending({});
                                                     setTypes((ts) => ts && ts.filter((_, j) => j !== i));
                                                     setDirty(true);
                                                 }}
@@ -227,6 +269,8 @@ export default function CollectionTypesPanel({ open, onOpenChange, library, labe
                                         options={labels.map((l) => ({ value: l, label: l }))}
                                         onChange={(v) => update(i, { labels: v })}
                                         allowCustom
+                                        pending={pending[pendingKey(i, "labels")] ?? ""}
+                                        onPendingChange={(text) => setPendingText(i, "labels", text)}
                                     />
                                     <MatchList
                                         title="Sort-title prefixes"
@@ -235,6 +279,8 @@ export default function CollectionTypesPanel({ open, onOpenChange, library, labe
                                         options={prefixes.map((p) => ({ value: p.prefix, label: `${p.prefix} · ${plural(p.count, "collection")}, e.g. ${p.example}` }))}
                                         onChange={(v) => update(i, { prefixes: v })}
                                         allowCustom
+                                        pending={pending[pendingKey(i, "prefixes")] ?? ""}
+                                        onPendingChange={(text) => setPendingText(i, "prefixes", text)}
                                     />
                                     <MatchList
                                         title="Groups"

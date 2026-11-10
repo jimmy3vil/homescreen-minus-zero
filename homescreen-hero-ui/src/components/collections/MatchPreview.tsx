@@ -1,25 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, LayoutGrid, List, Loader2, Rows3, TableProperties } from "lucide-react";
 import { fetchWithAuth } from "../../utils/api";
+import { useItemView, type ItemView } from "./listView";
+import { details } from "./itemDetails";
 
 // The items a smart collection's rules match, as you build them: a count,
 // then pages of items in one of four views.
 
-export type PreviewItem = {
-    rating_key: string;
-    title: string;
-    year: string | null;
-    poster_url: string | null;
-    type: string | null;
-    content_rating: string | null;
-    duration_minutes: number | null;
-    rating: number | null;
-    genres: string[];
-    seasons: number | null;
-    episodes: number | null;
-};
+export type { PreviewItem } from "./itemDetails";
+import type { PreviewItem } from "./itemDetails";
 
-type View = "detailed" | "compact" | "cards" | "rows";
+type View = ItemView;
 
 // When given, items can be ticked to add to a manual collection
 export type ItemSelection = {
@@ -27,7 +18,6 @@ export type ItemSelection = {
     existing: Set<string>; // already in the collection: shown ticked, can't be changed
     onChange: (next: Set<string>) => void;
 };
-const VIEW_KEY = "smartPreview.view";
 const PAGE = 30;
 
 const VIEWS: { key: View; label: string; icon: typeof List }[] = [
@@ -39,35 +29,7 @@ const VIEWS: { key: View; label: string; icon: typeof List }[] = [
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-function readView(): View {
-    try {
-        const v = localStorage.getItem(VIEW_KEY);
-        return v === "compact" || v === "cards" || v === "rows" ? v : "detailed";
-    } catch {
-        return "detailed";
-    }
-}
-
-function runtime(minutes: number | null) {
-    if (!minutes) return null;
-    const h = Math.floor(minutes / 60);
-    return h ? `${h}h ${minutes % 60}m` : `${minutes}m`;
-}
-
-// "1999 · PG · 1h 30m · ★ 7.5" (or seasons/episodes for shows)
-function details(item: PreviewItem): string {
-    const parts = [
-        item.year,
-        item.content_rating,
-        item.type === "show"
-            ? [item.seasons && plural(item.seasons, "season"), item.episodes && plural(item.episodes, "episode")].filter(Boolean).join(", ")
-            : runtime(item.duration_minutes),
-        item.rating ? `★ ${item.rating.toFixed(1)}` : null,
-    ];
-    return parts.filter(Boolean).join(" · ");
-}
-
-function Poster({ item, className }: { item: PreviewItem; className: string }) {
+export function Poster({ item, className }: { item: PreviewItem; className: string }) {
     return (
         <div className={`overflow-hidden rounded bg-slate-800 ${className}`}>
             {item.poster_url && <img src={item.poster_url} alt="" className="h-full w-full object-cover" loading="lazy" />}
@@ -83,18 +45,39 @@ function Tick({ on, locked }: { on: boolean; locked: boolean }) {
     );
 }
 
+export function ViewToggle({ view, onChange }: { view: View; onChange: (v: View) => void }) {
+    return (
+        <div className="ml-auto inline-flex rounded-lg border border-slate-700 bg-slate-900 p-0.5">
+            {VIEWS.map((v) => (
+                <button
+                    key={v.key}
+                    type="button"
+                    onClick={() => onChange(v.key)}
+                    title={v.label}
+                    aria-pressed={view === v.key}
+                    className={`rounded-md p-1.5 transition-colors ${view === v.key ? "bg-primary/20 text-primary" : "text-slate-400 hover:text-slate-200"}`}
+                >
+                    <v.icon className="h-4 w-4" />
+                </button>
+            ))}
+        </div>
+    );
+}
+
 export default function MatchPreview({
     library,
     queryJson,
     selection,
+    idleMessage = "Finish the rules to see matching items.",
 }: {
     library: string;
     queryJson: string | null;
     selection?: ItemSelection;
+    idleMessage?: string; // shown while there's nothing to look for yet
 }) {
     const [selectingAll, setSelectingAll] = useState(false);
     const [selectNote, setSelectNote] = useState<string | null>(null);
-    const [view, setView] = useState<View>(readView);
+    const [view, changeView] = useItemView();
     const [count, setCount] = useState<number | null>(null);
     const [items, setItems] = useState<PreviewItem[]>([]);
     const [error, setError] = useState<string | null>(null);
@@ -154,14 +137,6 @@ export default function MatchPreview({
         }
     };
 
-    const changeView = (v: View) => {
-        setView(v);
-        try {
-            localStorage.setItem(VIEW_KEY, v);
-        } catch {
-            // Storage unavailable; the view just won't be remembered
-        }
-    };
 
     const isExisting = (key: string) => !!selection?.existing.has(key);
     const isOn = (key: string) => isExisting(key) || !!selection?.selected.has(key);
@@ -228,25 +203,13 @@ export default function MatchPreview({
             <div className="flex flex-wrap items-center gap-2 text-sm text-slate-300">
                 {loading && <Loader2 className="h-4 w-4 animate-spin" />}
                 {!queryJson ? (
-                    <span className="text-slate-500">Finish the rules to see matching items.</span>
+                    <span className="text-slate-500">{idleMessage}</span>
                 ) : error ? (
                     <span className="text-red-400">{error}</span>
                 ) : (
                     <span>{label}</span>
                 )}
-                <div className="ml-auto inline-flex rounded-lg border border-slate-700 bg-slate-900 p-0.5">
-                    {VIEWS.map((v) => (
-                        <button
-                            key={v.key}
-                            type="button"
-                            onClick={() => changeView(v.key)}
-                            title={v.label}
-                            className={`rounded-md p-1.5 transition-colors ${view === v.key ? "bg-primary/20 text-primary" : "text-slate-400 hover:text-slate-200"}`}
-                        >
-                            <v.icon className="h-4 w-4" />
-                        </button>
-                    ))}
-                </div>
+                <ViewToggle view={view} onChange={changeView} />
             </div>
 
             {selection && showing && count! > 0 && (
@@ -260,9 +223,16 @@ export default function MatchPreview({
                         {selectingAll && <Loader2 className="h-3 w-3 animate-spin" />}
                         Select all {plural(count!, "matching item")}
                     </button>
-                    <button type="button" onClick={() => addKeys(items.map((i) => i.rating_key))} className="rounded-lg border border-slate-700 px-2.5 py-1 text-slate-300 hover:bg-slate-800">
-                        Select the {plural(items.length, "shown item")}
-                    </button>
+                    {items.length < count! && (
+                        <button
+                            type="button"
+                            onClick={() => addKeys(items.map((i) => i.rating_key))}
+                            title="Only the items loaded so far; Show more loads the next batch"
+                            className="rounded-lg border border-slate-700 px-2.5 py-1 text-slate-300 hover:bg-slate-800"
+                        >
+                            Select {items.length} of {count}
+                        </button>
+                    )}
                     {selection.selected.size > 0 && (
                         <button type="button" onClick={() => selection.onChange(new Set())} className="rounded-lg border border-slate-700 px-2.5 py-1 text-slate-300 hover:bg-slate-800">
                             Clear selection
