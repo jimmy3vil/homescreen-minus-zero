@@ -24,6 +24,10 @@ export type CollectionActions = {
     showAttention: boolean; // a housekeeping filter is on, so always show "needs attention" badges
     filterType: (type: CollectionTypeRef) => void; // clicking a Type badge filters the page by that type
     groups: { name: string; smart: boolean }[]; // this library's groups
+    // Selecting several collections for bulk actions
+    selecting: boolean;
+    isSelected: (c: CollectionOverview) => boolean;
+    toggleSelect: (c: CollectionOverview) => void;
     setGroup: (c: CollectionOverview, group: string, member: boolean) => Promise<void>;
 };
 
@@ -319,7 +323,31 @@ export function CollectionBadges({
     );
 }
 
+// While selecting, clicking a collection ticks it instead of opening it
+const activate = (c: CollectionOverview, actions: CollectionActions) => (actions.selecting ? actions.toggleSelect(c) : actions.open(c));
+
+function SelectTick({ collection, actions, className = "" }: { collection: CollectionOverview; actions: CollectionActions; className?: string }) {
+    if (!actions.selecting) return null;
+    const on = actions.isSelected(collection);
+    return (
+        <button
+            type="button"
+            role="checkbox"
+            aria-checked={on}
+            aria-label={`Select ${collection.title}`}
+            onClick={(e) => {
+                e.stopPropagation();
+                actions.toggleSelect(collection);
+            }}
+            className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border ${on ? "border-primary bg-primary" : "border-slate-500 bg-slate-900/80"} ${className}`}
+        >
+            {on && <Check className="h-3.5 w-3.5 text-white" />}
+        </button>
+    );
+}
+
 function Actions({ collection, actions }: { collection: CollectionOverview; actions: CollectionActions }) {
+    if (actions.selecting) return null;
     const btn = "p-2 rounded-lg bg-slate-800/70 text-slate-300 hover:bg-slate-700/90 hover:text-white transition-colors";
     return (
         <span className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
@@ -365,11 +393,13 @@ export function CollectionRow({ collection, actions }: { collection: CollectionO
     }, [inView, items, collection.library, collection.rating_key, collection.item_count]);
 
     return (
-        <div ref={ref} className="group/coll space-y-2">
+        <div ref={ref} className={`group/coll space-y-2 rounded-xl ${actions.selecting && actions.isSelected(collection) ? "bg-primary/10 ring-1 ring-primary/40 p-2 -m-2" : ""}`}>
             <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="flex min-w-0 items-start gap-3">
+                <SelectTick collection={collection} actions={actions} className="mt-1" />
                 <div className="min-w-0 space-y-1">
                     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                        <button type="button" onClick={() => actions.open(collection)} className="text-lg font-bold text-white hover:text-primary transition-colors text-left">
+                        <button type="button" onClick={() => activate(collection, actions)} className="text-lg font-bold text-white hover:text-primary transition-colors text-left">
                             {collection.title}
                         </button>
                         <span className="text-xs text-slate-400">{plural(collection.item_count, "item")}</span>
@@ -378,6 +408,7 @@ export function CollectionRow({ collection, actions }: { collection: CollectionO
                         <p className="text-xs text-slate-500" title="Sort title">{collection.sort_title}</p>
                     )}
                     <CollectionBadges collection={collection} attention={actions.showAttention ? "always" : "hover"} onType={actions.filterType} />
+                </div>
                 </div>
                 <Actions collection={collection} actions={actions} />
             </div>
@@ -428,11 +459,12 @@ export function CollectionCardView({ collection, actions }: { collection: Collec
         <div
             role="button"
             tabIndex={0}
-            onClick={() => actions.open(collection)}
-            onKeyDown={(e) => { if (e.key === "Enter") actions.open(collection); }}
+            onClick={() => activate(collection, actions)}
+            onKeyDown={(e) => { if (e.key === "Enter") activate(collection, actions); }}
             className="group group/coll relative cursor-pointer text-left"
         >
-            <div className="relative aspect-[2/3] overflow-hidden rounded-lg border border-slate-700/40 bg-slate-800 group-hover:border-primary/70 transition-colors">
+            <div className={`relative aspect-[2/3] overflow-hidden rounded-lg border bg-slate-800 group-hover:border-primary/70 transition-colors ${actions.selecting && actions.isSelected(collection) ? "border-primary ring-2 ring-primary" : "border-slate-700/40"}`}>
+                <SelectTick collection={collection} actions={actions} className="absolute left-2 top-2 z-10" />
                 {collection.poster_url ? (
                     <img src={collection.poster_url} alt={collection.title} className="h-full w-full object-cover" loading="lazy" />
                 ) : (
@@ -461,10 +493,11 @@ export function CollectionListItem({ collection, actions }: { collection: Collec
         <div
             role="button"
             tabIndex={0}
-            onClick={() => actions.open(collection)}
-            onKeyDown={(e) => { if (e.key === "Enter") actions.open(collection); }}
-            className="flex items-center gap-3 rounded-lg border border-slate-800/60 bg-slate-900/40 px-3 py-2 hover:border-primary/40 cursor-pointer"
+            onClick={() => activate(collection, actions)}
+            onKeyDown={(e) => { if (e.key === "Enter") activate(collection, actions); }}
+            className={`flex items-center gap-3 rounded-lg border px-3 py-2 hover:border-primary/40 cursor-pointer ${actions.selecting && actions.isSelected(collection) ? "border-primary/60 bg-primary/10" : "border-slate-800/60 bg-slate-900/40"}`}
         >
+            <SelectTick collection={collection} actions={actions} />
             <div className="h-12 w-8 shrink-0 overflow-hidden rounded bg-slate-800">
                 {collection.poster_url && <img src={collection.poster_url} alt="" className="h-full w-full object-cover" loading="lazy" />}
             </div>

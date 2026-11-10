@@ -172,3 +172,17 @@ def test_shared_traits_need_most_items():
     assert t["decade"] == []  # 1990s and 2010s are 2 of 4 each: not more than half
     assert t["content_rating"] == ["G"]
     assert editing.shared_traits(items[:1])["genre"] == []
+
+
+def test_bulk_membership_counts_only_real_changes(monkeypatch):
+    from homescreen_hero.web.routers.config import groups as groups_router
+
+    store = {"groups": [{"name": "Actors", "collections": ["A"]}]}
+    saved = {}
+    monkeypatch.setattr(groups_router, "load_config_mapping", lambda: store)
+    monkeypatch.setattr(groups_router, "save_config_mapping", lambda d: saved.setdefault("d", d))
+    monkeypatch.setattr(groups_router, "get_config_path", lambda: "/data/config.yaml")
+    req = groups_router.BulkGroupMembershipRequest(group="Actors", collections=["A", "B", "C", "B"], member=True)
+    out = groups_router.update_group_membership_bulk(req, current_user=None)
+    assert out.message == "Added 2 collections to group 'Actors'"
+    assert saved["d"]["groups"][0]["collections"] == ["A", "B", "C"]

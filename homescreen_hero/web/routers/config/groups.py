@@ -251,6 +251,42 @@ def update_group_membership(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+class BulkGroupMembershipRequest(BaseModel):
+    group: str
+    collections: List[str]
+    member: bool
+
+
+@router.post("/groups/membership/bulk", response_model=ConfigSaveResponse)
+def update_group_membership_bulk(
+    payload: BulkGroupMembershipRequest,
+    current_user: CurrentUser = Depends(require_admin),
+) -> ConfigSaveResponse:
+    # Add many collections to, or remove them from, a manual group in one save.
+    try:
+        data = load_config_mapping()
+        groups = load_group_list(data)
+        changed = sum(
+            1 for name in dict.fromkeys(payload.collections)
+            if set_group_membership(groups, payload.group, name, payload.member)
+        )
+        if changed:
+            save_config_mapping({**data, "groups": groups})
+        verb = "Added" if payload.member else "Removed"
+        prep = "to" if payload.member else "from"
+        noun = "collection" if changed == 1 else "collections"
+        return ConfigSaveResponse(
+            ok=True,
+            path=str(get_config_path()),
+            env_override=CONFIG_ENV_VAR in os.environ,
+            message=f"{verb} {changed} {noun} {prep} group '{payload.group}'",
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/groups/reorder", response_model=ConfigSaveResponse)
 def reorder_groups(
     payload: GroupReorderRequest,

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, LayoutGrid, List, Loader2, Rows3, TableProperties } from "lucide-react";
 import { fetchWithAuth } from "../../utils/api";
-import { useItemView, type ItemView } from "./listView";
+import { useItemView, type ItemListKind, type ItemView } from "./listView";
 import { details } from "./itemDetails";
 
 // The items a smart collection's rules match, as you build them: a count,
@@ -69,15 +69,17 @@ export default function MatchPreview({
     queryJson,
     selection,
     idleMessage = "Finish the rules to see matching items.",
+    viewKind = "filters",
 }: {
     library: string;
     queryJson: string | null;
     selection?: ItemSelection;
     idleMessage?: string; // shown while there's nothing to look for yet
+    viewKind?: ItemListKind; // which list's remembered view this uses
 }) {
     const [selectingAll, setSelectingAll] = useState(false);
     const [selectNote, setSelectNote] = useState<string | null>(null);
-    const [view, changeView] = useItemView();
+    const [view, changeView] = useItemView(viewKind);
     const [count, setCount] = useState<number | null>(null);
     const [items, setItems] = useState<PreviewItem[]>([]);
     const [error, setError] = useState<string | null>(null);

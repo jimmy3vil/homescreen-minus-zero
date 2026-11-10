@@ -119,6 +119,7 @@ export default function ItemFinder({ library, selected, onSelectedChange, existi
                     queryJson={searchJson}
                     selection={selection}
                     idleMessage="Type a title, or use Filters to find items."
+                    viewKind="search"
                 />
             </div>
             <div className={tab === "filters" ? "space-y-2" : "hidden"}>

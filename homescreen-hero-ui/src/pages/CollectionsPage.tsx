@@ -11,6 +11,8 @@ import {
     LayoutGrid,
     List,
     Plus,
+    CheckSquare,
+    ListTree,
     RefreshCw,
     Rows3,
     Shapes,
@@ -33,6 +35,10 @@ import CollectionFilterPanel from "../components/collections/CollectionFilterPan
 import EditCollectionPanel from "../components/collections/EditCollectionPanel";
 import CollectionTypesPanel from "../components/collections/CollectionTypesPanel";
 import ItemFinder from "../components/collections/ItemFinder";
+import BulkActionsBar from "../components/collections/BulkActionsBar";
+import CollectionSections, { SectionJump } from "../components/collections/CollectionSections";
+import { toSections } from "../components/collections/sections";
+import SavedViewsMenu, { type SavedView } from "../components/collections/SavedViewsMenu";
 import {
     CollectionCardView,
     CollectionListItem,
@@ -158,6 +164,18 @@ export default function CollectionsPage() {
     // Edit panel and this library's groups
     const [editingKey, setEditingKey] = useState<string | null>(null);
     const [typesOpen, setTypesOpen] = useState(false);
+    // Sort-title sections (only while sorting by sort title), remembered per library
+    const [sectionsOn, setSectionsOn] = useState(false);
+    const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
+    const [sectionNames, setSectionNames] = useState<Record<string, string>>({});
+    const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+    // Selecting several collections for bulk actions
+    const [selecting, setSelecting] = useState(false);
+    const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+    const stopSelecting = () => {
+        setSelecting(false);
+        setSelectedKeys(new Set());
+    };
     const [libraryGroups, setLibraryGroups] = useState<{ name: string; smart: boolean }[]>([]);
 
     // Load libraries once; pick a library if none is chosen or it's no longer enabled
@@ -184,6 +202,7 @@ export default function CollectionsPage() {
         if (next === library) return;
         setLibrary(next);
         setOverview(null);
+        stopSelecting();
         setFilters(loadStoredFilters(next) || DEFAULT_FILTERS);
     };
 
@@ -262,6 +281,9 @@ export default function CollectionsPage() {
         () => sortCollections(applyFilters(all, filters, filters.movie ? movieTitles : null), filters.sort, filters.dir),
         [all, filters, movieTitles]
     );
+    const sectionsAvailable = filters.sort === "sort_title";
+    const sectionsActive = sectionsAvailable && sectionsOn;
+    const sections = useMemo(() => (sectionsActive ? toSections(visible) : []), [sectionsActive, visible]);
     const chips = activeFilterChips(filters);
     const filtering = chips.length > 0 || filters.scope !== "all";
     const panelFilterCount = chips.filter((c) => c.key !== "q").length;
@@ -299,12 +321,21 @@ export default function CollectionsPage() {
     };
 
     const actions: CollectionActions = {
-        open: (c) => navigate(`/collections/${encodeURIComponent(c.library)}/${encodeURIComponent(c.title)}`),
+        open: (c) => navigate(`/collections/${encodeURIComponent(c.library)}/c/${c.rating_key}`),
         edit: (c) => setEditingKey(c.rating_key),
         remove: (c) => setPendingDelete({ library: c.library, title: c.title }),
         pin: (c, v) => togglePin(c, v),
         unpin: (c) => togglePin(c),
         pinning: pinningKey,
+        selecting,
+        isSelected: (c) => selectedKeys.has(c.rating_key),
+        toggleSelect: (c) =>
+            setSelectedKeys((prev) => {
+                const next = new Set(prev);
+                if (next.has(c.rating_key)) next.delete(c.rating_key);
+                else next.add(c.rating_key);
+                return next;
+            }),
         filterType: (t) => setFilters({ ...filters, type: { id: String(t.id), name: t.name } }),
         showAttention: !!(filters.empty || filters.noSummary || filters.noPoster || filters.lastRotated?.op === "never"),
         groups: libraryGroups,
@@ -325,6 +356,53 @@ export default function CollectionsPage() {
                 setToast({ message: e instanceof Error ? e.message : "Couldn't change the group", type: "error" });
             }
         },
+    };
+
+    // Section names and saved views for this library, and its section preferences
+    useEffect(() => {
+        if (!library) return;
+        setSectionsOn(readStorage(`collections.sections.${library}`) === "1");
+        try {
+            setCollapsedSections(new Set(JSON.parse(readStorage(`collections.collapsed.${library}`) ?? "[]")));
+        } catch {
+            setCollapsedSections(new Set());
+        }
+        fetchWithAuth(`/api/collections/library/${encodeURIComponent(library)}/page-settings`)
+            .then((r) => r.json())
+            .then((d) => {
+                setSectionNames(d.section_names ?? {});
+                setSavedViews(d.saved_views ?? []);
+            })
+            .catch(() => {
+                setSectionNames({});
+                setSavedViews([]);
+            });
+    }, [library]);
+
+    const changeSectionsOn = (on: boolean) => {
+        setSectionsOn(on);
+        writeStorage(`collections.sections.${library}`, on ? "1" : "0");
+    };
+    const toggleSection = (prefix: string) =>
+        setCollapsedSections((prev) => {
+            const next = new Set(prev);
+            if (next.has(prefix)) next.delete(prefix);
+            else next.add(prefix);
+            writeStorage(`collections.collapsed.${library}`, JSON.stringify([...next]));
+            return next;
+        });
+    const renameSection = async (prefix: string, name: string) => {
+        const r = await fetchWithAuth(`/api/collections/library/${encodeURIComponent(library)}/section-name`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prefix, name }),
+        });
+        const d = await r.json().catch(() => null);
+        if (!r.ok) {
+            setToast({ message: d?.detail ?? "Couldn't name the section", type: "error" });
+            return;
+        }
+        setSectionNames(d.section_names ?? {});
     };
 
     // Groups that belong to this library, for "Add to group"
@@ -466,6 +544,50 @@ export default function CollectionsPage() {
     // ---------------------------------------------------------------- render
     const control = "flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-primary/70 transition-colors";
 
+    // One list of collections in the chosen view, loaded a page at a time
+    const renderList = (items: CollectionOverview[], key: string) => {
+        if (view === "rows") {
+            return (
+                <Incremental
+                    key={key}
+                    items={items}
+                    pageSize={15}
+                    render={(shown) => (
+                        <div className="space-y-8">
+                            {shown.map((c) => <CollectionRow key={c.rating_key} collection={c} actions={actions} />)}
+                        </div>
+                    )}
+                />
+            );
+        }
+        if (view === "cards") {
+            return (
+                <Incremental
+                    key={key}
+                    items={items}
+                    pageSize={60}
+                    render={(shown) => (
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                            {shown.map((c) => <CollectionCardView key={c.rating_key} collection={c} actions={actions} />)}
+                        </div>
+                    )}
+                />
+            );
+        }
+        return (
+            <Incremental
+                key={key}
+                items={items}
+                pageSize={100}
+                render={(shown) => (
+                    <div className="flex flex-col gap-1.5">
+                        {shown.map((c) => <CollectionListItem key={c.rating_key} collection={c} actions={actions} />)}
+                    </div>
+                )}
+            />
+        );
+    };
+
     const body = () => {
         if (!loadingLibraries && enabledLibraries.length === 0) {
             return (
@@ -518,46 +640,19 @@ export default function CollectionsPage() {
                 </div>
             );
         }
-        if (view === "rows") {
+        if (sectionsActive) {
             return (
-                <Incremental
-                    key={listKey}
-                    items={visible}
-                    pageSize={15}
-                    render={(items) => (
-                        <div className="space-y-8">
-                            {items.map((c) => <CollectionRow key={c.rating_key} collection={c} actions={actions} />)}
-                        </div>
-                    )}
+                <CollectionSections
+                    sections={sections}
+                    names={sectionNames}
+                    collapsed={collapsedSections}
+                    onToggle={toggleSection}
+                    onRename={renameSection}
+                    renderItems={(items, prefix) => renderList(items, `${listKey}|${prefix}`)}
                 />
             );
         }
-        if (view === "cards") {
-            return (
-                <Incremental
-                    key={listKey}
-                    items={visible}
-                    pageSize={60}
-                    render={(items) => (
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-                            {items.map((c) => <CollectionCardView key={c.rating_key} collection={c} actions={actions} />)}
-                        </div>
-                    )}
-                />
-            );
-        }
-        return (
-            <Incremental
-                key={listKey}
-                items={visible}
-                pageSize={100}
-                render={(items) => (
-                    <div className="flex flex-col gap-1.5">
-                        {items.map((c) => <CollectionListItem key={c.rating_key} collection={c} actions={actions} />)}
-                    </div>
-                )}
-            />
-        );
+        return renderList(visible, listKey);
     };
 
     return (
@@ -649,6 +744,15 @@ export default function CollectionsPage() {
                     />
                 </div>
 
+                <SavedViewsMenu
+                    library={library}
+                    views={savedViews}
+                    currentParams={filtersToParams(filters).toString()}
+                    onViewsChange={setSavedViews}
+                    onApply={(v) => setFilters(paramsToFilters(new URLSearchParams(v.params)))}
+                    onMessage={(message, type = "success") => setToast({ message, type })}
+                />
+
                 <label className="flex items-center gap-2 text-sm text-slate-400">
                     Sort by
                     <select
@@ -671,6 +775,18 @@ export default function CollectionsPage() {
 
                 <button
                     type="button"
+                    onClick={() => changeSectionsOn(!sectionsOn)}
+                    disabled={!sectionsAvailable}
+                    title={sectionsAvailable ? "Group collections under headings by sort-title prefix" : "Sort by sort title to use sections"}
+                    className={`${control} disabled:opacity-40 ${sectionsActive ? "border-primary bg-primary/15 text-primary hover:bg-primary/25" : ""}`}
+                    aria-pressed={sectionsActive}
+                >
+                    <ListTree className="h-4 w-4" /> Sections
+                </button>
+                {sectionsActive && sections.length > 1 && <SectionJump sections={sections} names={sectionNames} />}
+
+                <button
+                    type="button"
                     onClick={() => setFilterPanelOpen(true)}
                     disabled={!overview}
                     className={`${control} ${panelFilterCount ? "border-primary bg-primary/15 text-primary hover:bg-primary/25" : ""}`}
@@ -680,6 +796,17 @@ export default function CollectionsPage() {
                     {panelFilterCount > 0 && (
                         <span className="rounded-full bg-primary px-1.5 text-xs font-bold text-white">{panelFilterCount}</span>
                     )}
+                </button>
+
+                <button
+                    type="button"
+                    onClick={() => (selecting ? stopSelecting() : setSelecting(true))}
+                    disabled={!overview}
+                    className={`${control} ${selecting ? "border-primary bg-primary/15 text-primary hover:bg-primary/25" : ""}`}
+                    title="Select several collections to act on at once"
+                >
+                    <CheckSquare className="h-4 w-4" />
+                    {selecting ? "Done selecting" : "Select"}
                 </button>
 
                 <div className="ml-auto inline-flex rounded-lg border border-slate-700 bg-slate-900 p-0.5">
@@ -733,6 +860,22 @@ export default function CollectionsPage() {
             </div>
 
             {body()}
+
+            {selecting && overview && (
+                <BulkActionsBar
+                    library={library}
+                    selected={visible.filter((c) => selectedKeys.has(c.rating_key))}
+                    visibleCount={visible.length}
+                    groups={libraryGroups}
+                    onSelectAllVisible={() => setSelectedKeys(new Set(visible.map((c) => c.rating_key)))}
+                    onClear={() => setSelectedKeys(new Set())}
+                    onDone={(message, type = "success") => {
+                        setToast({ message, type });
+                        setSelectedKeys(new Set());
+                        loadOverview(true);
+                    }}
+                />
+            )}
 
             {overview && (
                 <CollectionTypesPanel

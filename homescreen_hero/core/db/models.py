@@ -468,3 +468,27 @@ class CollectionTypeAssignment(Base):
     library = Column(String, nullable=False, index=True)
     rating_key = Column(String, nullable=False, index=True)
     type_id = Column(Integer, nullable=False, index=True)
+
+
+class SortTitleSection(Base):
+    # A name for a sort-title prefix, shown as a section heading on the
+    # Collections page when sorting by sort title (e.g. "!024" -> "Living
+    # Community Lists"). Per library.
+    __tablename__ = "sort_title_sections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    library = Column(String, nullable=False, index=True)
+    prefix = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+
+
+class SavedCollectionView(Base):
+    # A named set of Collections page filters and sort, per library.
+    # `params` is the page-address form of the filters (e.g. "scope=pinned&sort=title").
+    __tablename__ = "saved_collection_views"
+
+    id = Column(Integer, primary_key=True, index=True)
+    library = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    params = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

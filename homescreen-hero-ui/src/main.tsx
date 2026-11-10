@@ -17,6 +17,7 @@ import { ThemeProvider } from "./utils/theme";
 import { AuthProvider } from "./utils/auth";
 import NotFoundPage from "./pages/NotFoundPage";
 import ProtectedRoute from "./components/ProtectedRoute";
+import CollectionPage from "./pages/CollectionPage";
 import CollectionDetailPage from "./pages/CollectionDetailPage";
 import CollectionsPage from "./pages/CollectionsPage";
 import ToolsPage from "./pages/ToolsPage";
@@ -55,6 +56,7 @@ const router = createBrowserRouter([
       { path: "/groups/smart/:groupId", element: <SmartGroupDetailPage /> },
       { path: "/groups/:groupId", element: <GroupDetailPage /> },
       { path: "/collections", element: <CollectionsPage /> },
+      { path: "/collections/:library/c/:ratingKey", element: <CollectionPage /> },
       { path: "/collections/:library/:collectionTitle", element: <CollectionDetailPage /> },
       { path: "/integrations", element: <Navigate to="/lists" replace /> },
       { path: "/lists", element: <ListsPage /> },

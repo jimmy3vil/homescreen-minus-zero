@@ -1906,3 +1906,64 @@ def create_manual_collection_endpoint(
         raise HTTPException(status_code=502, detail=f"Plex request failed: {e}")
     invalidate_collections_cache()
     return {"success": True, "rating_key": rating_key, "title": payload.title.strip(), "added": len(dict.fromkeys(payload.rating_keys))}
+
+
+# ---------------------------------------------------------------- Collections page settings: sections and saved views
+
+class SectionNameIn(BaseModel):
+    prefix: str
+    name: str = ""
+
+
+class SavedViewIn(BaseModel):
+    name: str
+    params: str = ""
+
+
+@router.get("/library/{library}/page-settings")
+def get_collections_page_settings(
+    library: str,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.collections_page_settings import saved_views, section_names
+
+    return {"section_names": section_names(library), "saved_views": saved_views(library)}
+
+
+@router.put("/library/{library}/section-name")
+def put_section_name(
+    library: str,
+    payload: SectionNameIn,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.collections_page_settings import set_section_name
+
+    try:
+        return {"section_names": set_section_name(library, payload.prefix, payload.name)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/library/{library}/saved-views")
+def post_saved_view(
+    library: str,
+    payload: SavedViewIn,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.collections_page_settings import save_view
+
+    try:
+        return {"saved_views": save_view(library, payload.name, payload.params)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/library/{library}/saved-views/{view_id}")
+def delete_saved_view(
+    library: str,
+    view_id: int,
+    _current_user: CurrentUser = Depends(require_admin),
+) -> dict:
+    from homescreen_hero.core.collections_page_settings import delete_view
+
+    return {"saved_views": delete_view(library, view_id)}

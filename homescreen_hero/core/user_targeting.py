@@ -17,12 +17,21 @@ LABEL_PREFIX = "Hsh-hide-"  # I hate having to capitalize, but Plex likes to aut
 def sync_all_user_filters(config: AppConfig) -> None:
     # Make sure every user's sharing settings include their hsh-hide label exclusion.
     # Users not excluded by any group get their hsh filters cleaned instead.
+    #
+    # Only runs when a group targets specific users, and only writes a user's
+    # sharing restrictions when they'd actually change, so friends' Plex
+    # settings aren't rewritten on every start-up and rotation. (To undo
+    # targeting that's since been removed, use Tools > Clear User Targeting.)
+    groups_with_targeting = [g for g in config.groups if g.target_users is not None]
+    if not groups_with_targeting:
+        logger.debug("No groups target specific users; leaving users' sharing restrictions alone")
+        return
+
     all_users = get_all_plex_users(config)
     account = get_plex_account(config)
 
     # Build set of usernames that are excluded by at least one group's targeting
     # (i.e. users NOT in a group's target_users list)
-    groups_with_targeting = [g for g in config.groups if g.target_users is not None]
     excluded_usernames: set = set()
     if groups_with_targeting:
         for group in groups_with_targeting:
@@ -55,6 +64,13 @@ def sync_all_user_filters(config: AppConfig) -> None:
                 new_tv = _clean_hsh_filter(current.get("filterTelevision", ""))
 
             existing_music = current.get("filterMusic", "")
+            if new_movies == current.get("filterMovies", "") and new_tv == current.get("filterTelevision", ""):
+                logger.debug(f"Filters for {username} already up to date")
+                continue
+            logger.info(
+                "Changing filters for %s: movies %r -> %r, TV %r -> %r",
+                username, current.get("filterMovies", ""), new_movies, current.get("filterTelevision", ""), new_tv,
+            )
             if _set_user_filter(account, username, user_id, new_movies, new_tv, existing_music):
                 action = "Set" if needs_filter else "Cleaned"
                 logger.info(f"{action} filters for {username}")

@@ -10,7 +10,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { GripVertical, Loader2, Plus, Trash2 } from "lucide-react";
+import { GripVertical, Image as ImageIcon, Loader2, Plus, Trash2, X } from "lucide-react";
 import { fetchWithAuth } from "../../utils/api";
 import ItemFinder from "./ItemFinder";
 import { Poster, ViewToggle } from "./MatchPreview";
@@ -27,7 +27,34 @@ type Props = {
     library: string;
     customOrder: boolean;
     onChanged: (message: string) => void;
+    readOnly?: boolean; // smart collections: items come from filters, so no adding or removing
+    collapsibleFinder?: boolean; // show "Add items" as a button that opens the finder
+    onItemPoster?: (item: PreviewItem) => void; // offer "Change poster" on each item
+    wide?: boolean; // a full page: more cards per row
 };
+
+// Per-item actions: change the item's own poster, and remove it
+type ItemActionProps = {
+    item: Item;
+    busy: boolean;
+    onRemove?: () => void;
+    onPoster?: () => void;
+    overlay?: boolean;
+};
+
+function ItemActions({ item, busy, onRemove, onPoster, overlay = false }: ItemActionProps) {
+    const cls = `p-1.5 disabled:opacity-50 ${overlay ? "rounded-md bg-slate-900/80 text-slate-300" : "text-slate-500"}`;
+    return (
+        <span className="flex items-center gap-1">
+            {onPoster && (
+                <button type="button" onClick={onPoster} className={`${cls} hover:text-white`} aria-label={`Change the poster of ${item.title}`} title="Change poster">
+                    <ImageIcon className="h-4 w-4" />
+                </button>
+            )}
+            {onRemove && <RemoveButton item={item} busy={busy} onRemove={onRemove} overlay={overlay} />}
+        </span>
+    );
+}
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -50,7 +77,21 @@ function RemoveButton({ item, busy, onRemove, overlay = false }: { item: Item; b
     );
 }
 
-function ItemRow({ item, draggable, busy, onRemove, compact }: { item: Item; draggable: boolean; busy: boolean; onRemove: () => void; compact: boolean }) {
+function ItemRow({
+    item,
+    draggable,
+    busy,
+    onRemove,
+    onPoster,
+    compact,
+}: {
+    item: Item;
+    draggable: boolean;
+    busy: boolean;
+    onRemove?: () => void;
+    onPoster?: () => void;
+    compact: boolean;
+}) {
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.rating_key, disabled: !draggable });
     return (
         <div
@@ -78,19 +119,20 @@ function ItemRow({ item, draggable, busy, onRemove, compact }: { item: Item; dra
                     </div>
                 </>
             )}
-            <RemoveButton item={item} busy={busy} onRemove={onRemove} />
+            <ItemActions item={item} busy={busy} onRemove={onRemove} onPoster={onPoster} />
         </div>
     );
 }
 
-export default function CollectionItemsEditor({ base, library, customOrder, onChanged }: Props) {
+export default function CollectionItemsEditor({ base, library, customOrder, onChanged, readOnly = false, collapsibleFinder = false, onItemPoster, wide = false }: Props) {
+    const [finderOpen, setFinderOpen] = useState(!collapsibleFinder);
     const [items, setItems] = useState<Item[] | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [removing, setRemoving] = useState<string | null>(null);
 
     const [selected, setSelected] = useState<Set<string>>(new Set());
     const [adding, setAdding] = useState(false);
-    const [view, setView] = useItemView();
+    const [view, setView] = useItemView("collection");
     const listView = view === "detailed" || view === "compact";
 
     const sensors = useSensors(
@@ -176,21 +218,42 @@ export default function CollectionItemsEditor({ base, library, customOrder, onCh
 
     return (
         <div className="space-y-5">
-            <div className="space-y-2">
-                <span className="block text-xs font-medium uppercase tracking-wider text-slate-400">Add items from {library}</span>
-                <ItemFinder library={library} selected={selected} onSelectedChange={setSelected} existing={inCollection} />
-                {selected.size > 0 && (
-                    <button
-                        type="button"
-                        onClick={addSelected}
-                        disabled={adding}
-                        className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-1.5 text-sm font-bold text-white hover:bg-primary-hover disabled:opacity-50"
-                    >
-                        {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-                        Add {plural(selected.size, "item")} to this collection
-                    </button>
-                )}
-            </div>
+            {!readOnly && collapsibleFinder && !finderOpen && (
+                <button
+                    type="button"
+                    onClick={() => setFinderOpen(true)}
+                    className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-bold text-white hover:bg-primary-hover"
+                >
+                    <Plus className="h-4 w-4" /> Add items
+                </button>
+            )}
+            {!readOnly && finderOpen && (
+                <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+                    <div className="flex items-center justify-between">
+                        <span className="block text-xs font-medium uppercase tracking-wider text-slate-400">Add items from {library}</span>
+                        {collapsibleFinder && (
+                            <button type="button" onClick={() => setFinderOpen(false)} className="text-slate-400 hover:text-white" aria-label="Close Add items">
+                                <X className="h-4 w-4" />
+                            </button>
+                        )}
+                    </div>
+                    <ItemFinder library={library} selected={selected} onSelectedChange={setSelected} existing={inCollection} />
+                    {selected.size > 0 && (
+                        <button
+                            type="button"
+                            onClick={addSelected}
+                            disabled={adding}
+                            className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-1.5 text-sm font-bold text-white hover:bg-primary-hover disabled:opacity-50"
+                        >
+                            {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                            Add {plural(selected.size, "item")} to this collection
+                        </button>
+                    )}
+                </div>
+            )}
+            {readOnly && (
+                <p className="text-xs text-slate-500">This is a smart collection: its items come from its filters. Change them in Edit collection, Filters.</p>
+            )}
 
             <div className="space-y-2">
                 <div className="flex items-baseline justify-between">
@@ -198,10 +261,10 @@ export default function CollectionItemsEditor({ base, library, customOrder, onCh
                         {items ? `${plural(items.length, "item")} in this collection` : "Items in this collection"}
                     </span>
                     <span className="flex items-center gap-2">
-                        {items && items.length > 1 && !customOrder && (
+                        {items && items.length > 1 && !customOrder && !readOnly && (
                             <span className="text-xs text-slate-500">To arrange by hand, set item order to Custom in Advanced</span>
                         )}
-                        {items && items.length > 1 && customOrder && !listView && (
+                        {items && items.length > 1 && customOrder && !listView && !readOnly && (
                             <span className="text-xs text-slate-500">Switch to a list view to drag items into order</span>
                         )}
                         <ViewToggle view={view} onChange={setView} />
@@ -220,22 +283,29 @@ export default function CollectionItemsEditor({ base, library, customOrder, onCh
                                     <ItemRow
                                         key={item.rating_key}
                                         item={item}
-                                        draggable={customOrder}
+                                        draggable={customOrder && !readOnly}
                                         compact={view === "compact"}
                                         busy={removing === item.rating_key}
-                                        onRemove={() => remove(item)}
+                                        onRemove={readOnly ? undefined : () => remove(item)}
+                                        onPoster={onItemPoster ? () => onItemPoster(item) : undefined}
                                     />
                                 ))}
                             </div>
                         </SortableContext>
                     </DndContext>
                 ) : (
-                    <div className={view === "cards" ? "grid grid-cols-3 gap-3 sm:grid-cols-5" : "flex gap-2 overflow-x-auto pb-1"}>
+                    <div className={view === "cards" ? `grid grid-cols-3 gap-3 sm:grid-cols-5 ${wide ? "md:grid-cols-6 lg:grid-cols-8" : ""}` : "flex gap-2 overflow-x-auto pb-1"}>
                         {items.map((item) => (
                             <div key={item.rating_key} className={`group relative ${view === "rows" ? "w-24 shrink-0" : ""}`}>
                                 <Poster item={item} className="aspect-[2/3] w-full" />
                                 <span className="absolute right-1 top-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                                    <RemoveButton item={item} busy={removing === item.rating_key} onRemove={() => remove(item)} overlay />
+                                    <ItemActions
+                                        item={item}
+                                        busy={removing === item.rating_key}
+                                        onRemove={readOnly ? undefined : () => remove(item)}
+                                        onPoster={onItemPoster ? () => onItemPoster(item) : undefined}
+                                        overlay
+                                    />
                                 </span>
                                 <p className="mt-1 truncate text-xs text-slate-300" title={item.title}>{item.title}</p>
                                 {view === "cards" && item.year && <p className="text-[11px] text-slate-500">{item.year}</p>}
